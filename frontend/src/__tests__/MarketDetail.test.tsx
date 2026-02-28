@@ -200,6 +200,7 @@ describe("MarketDetail — resolved market", () => {
         userAddress="0xUser"
         isOwner={false}
         onBack={vi.fn()}
+        onConnectWallet={vi.fn()}
       />
     );
 
@@ -227,6 +228,7 @@ describe("MarketDetail — loading state", () => {
         userAddress=""
         isOwner={false}
         onBack={vi.fn()}
+        onConnectWallet={vi.fn()}
       />
     );
 

@@ -51,7 +51,7 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
   const [claimStep, setClaimStep] = useState("");
   const [notEligible, setNotEligible] = useState(false);
   const [copied, setCopied] = useState(false);
-  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Cleanup copied timeout on unmount
   useEffect(() => {
