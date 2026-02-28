@@ -18,6 +18,22 @@ const mockRefetch = vi.fn();
 vi.mock("../hooks/useMarkets", () => ({
   stateLabel: (s: number) =>
     ["Active", "Resolving", "Resolved", "Cancelled", "Expired"][s] ?? "Unknown",
+  displayState: (m: { state: number; endTime: number }) => {
+    if (m.state === 0 && Date.now() / 1000 > m.endTime) return "Voting Ended";
+    return ["Active", "Resolving", "Resolved", "Cancelled", "Expired"][m.state] ?? "Unknown";
+  },
+  isVotingOpen: (m: { state: number; startTime: number; endTime: number }) => {
+    const now = Date.now() / 1000;
+    return m.state === 0 && now >= m.startTime && now <= m.endTime;
+  },
+  STATE_COLORS: {
+    Active: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+    "Voting Ended": "bg-orange-500/20 text-orange-400 border-orange-500/30",
+    Resolving: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+    Resolved: "bg-violet-500/20 text-violet-400 border-violet-500/30",
+    Cancelled: "bg-red-500/20 text-red-400 border-red-500/30",
+    Expired: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
+  },
   useMarketDetail: (...args: unknown[]) => mockUseMarketDetail(...args),
 }));
 
@@ -26,10 +42,18 @@ vi.mock("../contracts", () => ({
   MARKET_FACTORY_ADDRESS: "0x1234567890abcdef1234567890abcdef12345678",
 }));
 
+vi.mock("../fhe", () => ({
+  encryptVote: vi.fn().mockResolvedValue({
+    handles: [new Uint8Array(32)],
+    inputProof: new Uint8Array(0),
+  }),
+}));
+
 describe("MarketDetail — active market", () => {
   const defaultProps = {
     address: "0x0000000000000000000000000000000000000001",
     provider: null,
+    rawProvider: null,
     signer: null,
     userAddress: "0xUser",
     onBack: vi.fn(),
@@ -158,6 +182,7 @@ describe("MarketDetail — resolved market", () => {
       <MarketDetail
         address="0x0000000000000000000000000000000000000001"
         provider={null}
+        rawProvider={null}
         signer={null}
         userAddress="0xUser"
         onBack={vi.fn()}
@@ -165,7 +190,7 @@ describe("MarketDetail — resolved market", () => {
     );
 
     expect(screen.getByText("Winner")).toBeInTheDocument();
-    expect(screen.getByText("Beta")).toBeInTheDocument();
+    expect(screen.getAllByText("Beta").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Resolved")).toBeInTheDocument();
   });
 });
@@ -183,6 +208,7 @@ describe("MarketDetail — loading state", () => {
       <MarketDetail
         address="0x0000000000000000000000000000000000000001"
         provider={null}
+        rawProvider={null}
         signer={null}
         userAddress=""
         onBack={vi.fn()}

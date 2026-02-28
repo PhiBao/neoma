@@ -1,23 +1,20 @@
 import { useState, useEffect } from "react";
-import { Contract, JsonRpcSigner, ethers, BrowserProvider } from "ethers";
+import { Contract, JsonRpcSigner, ethers, BrowserProvider, JsonRpcProvider } from "ethers";
+import type { Eip1193Provider } from "ethers";
 import { OpinionMarketABI } from "../contracts";
-import { stateLabel, useMarketDetail } from "../hooks/useMarkets";
+import { displayState, STATE_COLORS, isVotingOpen as checkVotingOpen, useMarketDetail } from "../hooks/useMarkets";
+import { encryptVote } from "../fhe";
+
+type AnyProvider = BrowserProvider | JsonRpcProvider;
 
 interface Props {
   address: string;
-  provider: BrowserProvider | null;
+  provider: AnyProvider | null;
+  rawProvider: Eip1193Provider | null;
   signer: JsonRpcSigner | null;
   userAddress: string;
   onBack: () => void;
 }
-
-const STATE_COLORS: Record<number, string> = {
-  0: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-  1: "bg-amber-500/20 text-amber-400 border-amber-500/30",
-  2: "bg-violet-500/20 text-violet-400 border-violet-500/30",
-  3: "bg-red-500/20 text-red-400 border-red-500/30",
-  4: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
-};
 
 function formatCountdown(targetTs: number): string {
   const diff = targetTs - Date.now() / 1000;
@@ -31,13 +28,16 @@ function formatCountdown(targetTs: number): string {
   return `${m}m ${s}s`;
 }
 
-export function MarketDetail({ address, provider, signer, userAddress, onBack }: Props) {
+export function MarketDetail({ address, provider, rawProvider, signer, userAddress, onBack }: Props) {
   const { market, hasVoted, loading, refetch } = useMarketDetail(provider, address);
   const [selectedOption, setSelectedOption] = useState<0 | 1 | null>(null);
   const [voting, setVoting] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [expiring, setExpiring] = useState(false);
   const [refunding, setRefunding] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  const [claimPrepared, setClaimPrepared] = useState(false);
+  const [hasClaimed, setHasClaimed] = useState(false);
   const [txHash, setTxHash] = useState("");
   const [error, setError] = useState("");
   const [countdown, setCountdown] = useState("");
@@ -54,34 +54,60 @@ export function MarketDetail({ address, provider, signer, userAddress, onBack }:
     return () => clearInterval(id);
   }, [market]);
 
+  // Check claim status for resolved markets
+  useEffect(() => {
+    if (!provider || !market || market.state !== 2 || !userAddress) return;
+    const check = async () => {
+      try {
+        const m = new Contract(address, OpinionMarketABI, provider);
+        const [prepared, claimed] = await Promise.all([
+          m.isClaimPrepared(userAddress),
+          m.hasClaimed(userAddress),
+        ]);
+        setClaimPrepared(prepared);
+        setHasClaimed(claimed);
+      } catch { /* silent */ }
+    };
+    check();
+  }, [provider, market, userAddress, address]);
+
+  async function handlePrepareClaim() {
+    if (!signer) return;
+    setClaiming(true);
+    setError("");
+    try {
+      const contract = new Contract(address, OpinionMarketABI, signer);
+      const tx = await contract.prepareClaim();
+      setTxHash(tx.hash);
+      await tx.wait();
+      setClaimPrepared(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Prepare claim failed";
+      setError(msg.includes("NotEligible") ? "You are not eligible — you voted for the losing option" : msg.slice(0, 150));
+    } finally {
+      setClaiming(false);
+    }
+  }
+
   async function handleVote() {
-    if (!signer || selectedOption === null || !market) return;
+    if (!signer || !rawProvider || selectedOption === null || !market) return;
     setVoting(true);
     setError("");
     setTxHash("");
     try {
       const contract = new Contract(address, OpinionMarketABI, signer);
 
-      // For Sepolia FHEVM, we need to use the fhevmjs library to encrypt the vote.
-      // For now, we'll use a simple approach: pass the choice as a raw uint8.
-      // In production, this would use fhevmjs createEncryptedInput.
-      //
-      // NOTE: On a real FHEVM network, the input MUST be encrypted client-side.
-      // This placeholder demonstrates the flow structure.
-      // The actual encryption would look like:
-      //
-      //   import { createInstance } from "fhevmjs";
-      //   const instance = await createInstance({ networkUrl: rpcUrl });
-      //   const input = instance.createEncryptedInput(address, userAddress);
-      //   input.add8(selectedOption);
-      //   const { handles, inputProof } = await input.encrypt();
-      //   await contract.vote(handles[0], inputProof, { value: market.stakeAmount });
+      // Encrypt the vote using the Zama FHEVM relayer SDK.
+      // This creates a ZK proof and verifies it with the relayer,
+      // returning handles and an input proof the contract can verify on-chain.
+      const { handles, inputProof } = await encryptVote(
+        rawProvider,
+        address,
+        userAddress,
+        selectedOption,
+      );
 
-      // Placeholder for demo — will need fhevmjs integration for live network
-      const placeholderHandle = ethers.zeroPadValue(ethers.toBeHex(selectedOption), 32);
-      const placeholderProof = "0x";
-
-      const tx = await contract.vote(placeholderHandle, placeholderProof, {
+      const tx = await contract.vote(handles[0], inputProof, {
         value: market.stakeAmount,
       });
       setTxHash(tx.hash);
@@ -155,12 +181,13 @@ export function MarketDetail({ address, provider, signer, userAddress, onBack }:
   }
 
   const now = Date.now() / 1000;
-  const isVotingOpen = market.state === 0 && now >= market.startTime && now <= market.endTime;
+  const isVotingOpen = checkVotingOpen(market);
   const canResolve = market.state === 0 && now > market.endTime && market.totalVoters > 0;
   const canExpire = (market.state === 0 || market.state === 1) && now >= market.resolutionDeadline;
   const canRefund = market.state === 4;
   const pool = ethers.formatEther(market.totalPool);
   const stake = ethers.formatEther(market.stakeAmount);
+  const dState = displayState(market);
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -177,10 +204,10 @@ export function MarketDetail({ address, provider, signer, userAddress, onBack }:
         {/* Header */}
         <div className="p-6 border-b border-[var(--border)]">
           <div className="flex items-center gap-3 mb-3">
-            <span className={`text-xs font-medium border rounded-full px-2.5 py-0.5 ${STATE_COLORS[market.state] ?? ""}`}>
-              {stateLabel(market.state)}
+            <span className={`text-xs font-medium border rounded-full px-2.5 py-0.5 ${STATE_COLORS[dState] ?? ""}`}>
+              {dState}
             </span>
-            {market.state === 0 && (
+            {market.state === 0 && isVotingOpen && (
               <span className="text-xs text-[var(--text-muted)]">
                 {countdown || formatCountdown(market.endTime)}
               </span>
@@ -212,16 +239,105 @@ export function MarketDetail({ address, provider, signer, userAddress, onBack }:
 
         {/* Voting / Resolution area */}
         <div className="p-6">
-          {/* Resolved — show winner */}
+          {/* Resolved — show winner + percentages + claim */}
           {market.state === 2 && (
-            <div className="text-center py-4">
-              <div className="text-sm text-[var(--text-muted)] mb-2">Winner</div>
-              <div className="text-3xl font-bold text-emerald-400 mb-1">
-                {market.winnerIndex === 0 ? market.optionA : market.optionB}
+            <div className="py-4">
+              <div className="text-center mb-4">
+                <div className="text-sm text-[var(--text-muted)] mb-2">Winner</div>
+                <div className="text-3xl font-bold text-emerald-400 mb-1">
+                  {market.winnerIndex === 0 ? market.optionA : market.optionB}
+                </div>
+                <div className="text-sm text-[var(--text-muted)]">
+                  {market.winnerCount} winning votes — {ethers.formatEther(market.totalPool / BigInt(market.winnerCount || 1))} ETH each
+                </div>
               </div>
-              <div className="text-sm text-[var(--text-muted)]">
-                {market.winnerCount} winning votes — {ethers.formatEther(market.totalPool / BigInt(market.winnerCount || 1))} ETH each
-              </div>
+
+              {/* Percentage bars */}
+              {market.totalVoters > 0 && (() => {
+                const winnerPct = Math.round((market.winnerCount / market.totalVoters) * 100);
+                const loserPct = 100 - winnerPct;
+                const aPct = market.winnerIndex === 0 ? winnerPct : loserPct;
+                const bPct = market.winnerIndex === 0 ? loserPct : winnerPct;
+                const aCount = market.winnerIndex === 0 ? market.winnerCount : market.totalVoters - market.winnerCount;
+                const bCount = market.winnerIndex === 1 ? market.winnerCount : market.totalVoters - market.winnerCount;
+                return (
+                  <div className="space-y-3 mb-4 px-1">
+                    <div>
+                      <div className="flex items-center justify-between text-sm mb-1">
+                        <span className={`font-medium ${market.winnerIndex === 0 ? "text-emerald-400" : "text-[var(--text-secondary)]"}`}>
+                          {market.optionA} {market.winnerIndex === 0 && <span>✓</span>}
+                        </span>
+                        <span className={`text-xs ${market.winnerIndex === 0 ? "text-emerald-400" : "text-[var(--text-muted)]"}`}>
+                          {aPct}% ({aCount} votes)
+                        </span>
+                      </div>
+                      <div className="h-3 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${market.winnerIndex === 0 ? "bg-emerald-500" : "bg-zinc-500"}`}
+                          style={{ width: `${aPct}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between text-sm mb-1">
+                        <span className={`font-medium ${market.winnerIndex === 1 ? "text-emerald-400" : "text-[var(--text-secondary)]"}`}>
+                          {market.optionB} {market.winnerIndex === 1 && <span>✓</span>}
+                        </span>
+                        <span className={`text-xs ${market.winnerIndex === 1 ? "text-emerald-400" : "text-[var(--text-muted)]"}`}>
+                          {bPct}% ({bCount} votes)
+                        </span>
+                      </div>
+                      <div className="h-3 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${market.winnerIndex === 1 ? "bg-emerald-500" : "bg-zinc-500"}`}
+                          style={{ width: `${bPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Claim section for voters */}
+              {hasVoted && !hasClaimed && signer && (
+                <div className="mt-4 border-t border-[var(--border)] pt-4">
+                  {!claimPrepared ? (
+                    <button
+                      onClick={handlePrepareClaim}
+                      disabled={claiming}
+                      className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/30 text-white rounded-xl py-3.5 text-sm font-semibold transition cursor-pointer disabled:cursor-not-allowed"
+                    >
+                      {claiming ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          Preparing Claim...
+                        </span>
+                      ) : (
+                        "Prepare Claim"
+                      )}
+                    </button>
+                  ) : (
+                    <div className="text-center">
+                      <div className="w-8 h-8 mx-auto mb-2 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+                      <div className="text-sm text-emerald-400 font-medium">Claim Prepared</div>
+                      <div className="text-xs text-[var(--text-muted)] mt-1">
+                        Waiting for the Zama KMS to produce a decryption proof. Once available, execute claim to receive your payout.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {hasClaimed && (
+                <div className="mt-4 border-t border-[var(--border)] pt-4 text-center">
+                  <div className="w-10 h-10 mx-auto mb-2 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div className="text-sm text-emerald-400 font-medium">Reward Claimed</div>
+                </div>
+              )}
             </div>
           )}
 

@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {FHE, ebool, euint8, euint32, externalEuint8} from "@fhevm/solidity/lib/FHE.sol";
 import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 import {IOpinionMarket} from "./interfaces/IOpinionMarket.sol";
+import {IMarketFactory} from "./interfaces/IMarketFactory.sol";
 
 /// @title OpinionMarket — Privacy-preserving binary opinion market
 /// @author Neoma Protocol
@@ -177,6 +178,7 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         if (_state != MarketState.Active) revert MarketNotActive();
         if (block.timestamp <= _endTime) revert VotingPeriodNotEnded();
         if (_totalVoters == 0) revert NoVotes();
+        if (msg.sender != IMarketFactory(factory).owner()) revert NotAuthorized();
 
         // Encrypted comparison (A wins on tie)
         ebool aWins = FHE.ge(_counterA, _counterB);

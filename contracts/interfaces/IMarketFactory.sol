@@ -21,6 +21,7 @@ interface IMarketFactory {
     error InvalidStake();
     error EmptyQuestion();
     error EmptyOption();
+    error NotOwner();
 
     // ═══════════════════════════════════════════════════════════════
     //  CORE FUNCTIONS
@@ -47,6 +48,7 @@ interface IMarketFactory {
     //  VIEW FUNCTIONS
     // ═══════════════════════════════════════════════════════════════
 
+    function owner() external view returns (address);
     function getMarket(uint256 id) external view returns (address);
     function getAllMarkets() external view returns (address[] memory);
     function marketCount() external view returns (uint256);

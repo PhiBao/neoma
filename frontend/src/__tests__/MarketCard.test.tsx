@@ -4,6 +4,17 @@ import { MarketCard } from "../components/MarketCard";
 import type { MarketInfo } from "../hooks/useMarkets";
 import { ethers } from "ethers";
 
+vi.mock("../fhe", () => ({
+  encryptVote: vi.fn().mockResolvedValue({
+    handles: [new Uint8Array(32)],
+    inputProof: new Uint8Array(0),
+  }),
+}));
+
+vi.mock("../contracts", () => ({
+  OpinionMarketABI: [],
+}));
+
 function makeMarket(overrides: Partial<MarketInfo> = {}): MarketInfo {
   return {
     address: "0x0000000000000000000000000000000000000001",
@@ -23,10 +34,19 @@ function makeMarket(overrides: Partial<MarketInfo> = {}): MarketInfo {
   };
 }
 
+const baseProps = {
+  hasVoted: false,
+  signer: null,
+  rawProvider: null,
+  userAddress: "",
+  onNavigate: vi.fn(),
+  onVoted: vi.fn(),
+};
+
 describe("MarketCard", () => {
   it("renders question, options, and stats", () => {
     const market = makeMarket();
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={market} {...baseProps} />);
 
     expect(screen.getByText("Will ETH hit $10k in 2026?")).toBeInTheDocument();
     expect(screen.getByText("Yes")).toBeInTheDocument();
@@ -37,81 +57,74 @@ describe("MarketCard", () => {
   });
 
   it("displays Active state badge for state=0", () => {
-    const market = makeMarket({ state: 0 });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={makeMarket({ state: 0 })} {...baseProps} />);
     expect(screen.getByText("Active")).toBeInTheDocument();
   });
 
   it("displays Resolving state badge for state=1", () => {
-    const market = makeMarket({ state: 1 });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={makeMarket({ state: 1 })} {...baseProps} />);
     expect(screen.getByText("Resolving")).toBeInTheDocument();
   });
 
   it("displays Resolved state badge for state=2", () => {
-    const market = makeMarket({ state: 2 });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={makeMarket({ state: 2 })} {...baseProps} />);
     expect(screen.getByText("Resolved")).toBeInTheDocument();
   });
 
   it("displays Cancelled state badge for state=3", () => {
-    const market = makeMarket({ state: 3 });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={makeMarket({ state: 3 })} {...baseProps} />);
     expect(screen.getByText("Cancelled")).toBeInTheDocument();
   });
 
   it("displays Expired state badge for state=4", () => {
-    const market = makeMarket({ state: 4 });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={makeMarket({ state: 4 })} {...baseProps} />);
     expect(screen.getByText("Expired")).toBeInTheDocument();
   });
 
   it("shows time remaining for active markets", () => {
     const market = makeMarket({
       state: 0,
-      endTime: Math.floor(Date.now() / 1000) + 7200, // 2h from now
+      endTime: Math.floor(Date.now() / 1000) + 7200,
     });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={market} {...baseProps} />);
     expect(screen.getByText(/left/)).toBeInTheDocument();
   });
 
   it("does not show time remaining for non-active markets", () => {
-    const market = makeMarket({ state: 2 });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={makeMarket({ state: 2 })} {...baseProps} />);
     expect(screen.queryByText(/left/)).not.toBeInTheDocument();
   });
 
   it("shows winner checkmark on resolved market", () => {
-    const market = makeMarket({
-      state: 2,
-      winnerIndex: 0,
-    });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
-    // Option A "Yes" should have the ✓
+    const market = makeMarket({ state: 2, winnerIndex: 0 });
+    render(<MarketCard market={market} {...baseProps} />);
     expect(screen.getByText("✓")).toBeInTheDocument();
   });
 
-  it("fires onClick when clicked", () => {
-    const handleClick = vi.fn();
-    render(<MarketCard market={makeMarket()} onClick={handleClick} />);
+  it("fires onNavigate when card is clicked", () => {
+    const handleNav = vi.fn();
+    render(<MarketCard market={makeMarket()} {...baseProps} onNavigate={handleNav} />);
     fireEvent.click(screen.getByText("Will ETH hit $10k in 2026?"));
-    expect(handleClick).toHaveBeenCalledOnce();
+    expect(handleNav).toHaveBeenCalledOnce();
   });
 
   it("formats large pools correctly", () => {
-    const market = makeMarket({
-      totalPool: ethers.parseEther("123.456"),
-    });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    const market = makeMarket({ totalPool: ethers.parseEther("123.456") });
+    render(<MarketCard market={market} {...baseProps} />);
     expect(screen.getByText(/123\.456/)).toBeInTheDocument();
   });
 
   it("shows 'Ended' when endTime has passed for active markets", () => {
     const market = makeMarket({
       state: 0,
-      endTime: Math.floor(Date.now() / 1000) - 60, // 1 min ago
+      endTime: Math.floor(Date.now() / 1000) - 60,
     });
-    render(<MarketCard market={market} onClick={vi.fn()} />);
+    render(<MarketCard market={market} {...baseProps} />);
     expect(screen.getByText(/Ended/)).toBeInTheDocument();
+  });
+
+  it("shows voted badge when user has voted", () => {
+    render(<MarketCard market={makeMarket()} {...baseProps} hasVoted={true} />);
+    expect(screen.getByText("Encrypted vote submitted")).toBeInTheDocument();
   });
 });

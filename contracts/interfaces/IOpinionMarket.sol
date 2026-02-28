@@ -55,6 +55,7 @@ interface IOpinionMarket {
     error TransferFailed();
     error InvalidTimings();
     error InvalidBatchRange();
+    error NotAuthorized();
 
     // ═══════════════════════════════════════════════════════════════
     //  CORE FUNCTIONS

@@ -13,10 +13,19 @@ contract MarketFactory is IMarketFactory {
     //  STORAGE
     // ═══════════════════════════════════════════════════════════════
 
+    address public override owner;
     address[] private _markets;
     mapping(address => bool) private _isMarket;
     mapping(uint256 => address) private _marketById;
     uint256 private _marketCount;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  CONSTRUCTOR
+    // ═══════════════════════════════════════════════════════════════
+
+    constructor() {
+        owner = msg.sender;
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  MARKET CREATION
@@ -31,6 +40,9 @@ contract MarketFactory is IMarketFactory {
         uint256 startTime_,
         uint256 endTime_
     ) external override returns (address market) {
+        // ── Only owner can create markets ──
+        if (msg.sender != owner) revert NotOwner();
+
         // ── Input validation ──
         if (bytes(questionText).length == 0) revert EmptyQuestion();
         if (bytes(optionAText).length == 0) revert EmptyOption();
