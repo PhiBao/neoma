@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Contract, BrowserProvider, JsonRpcProvider } from "ethers";
 import {
   MARKET_FACTORY_ADDRESS,
@@ -11,8 +11,7 @@ type AnyProvider = BrowserProvider | JsonRpcProvider;
 export interface MarketInfo {
   address: string;
   question: string;
-  optionA: string;
-  optionB: string;
+  options: string[];
   stakeAmount: bigint;
   startTime: number;
   endTime: number;
@@ -20,8 +19,9 @@ export interface MarketInfo {
   state: number;
   totalPool: bigint;
   totalVoters: number;
-  winnerIndex: number;
-  winnerCount: number;
+  winnerIndices: number[];
+  optionVoteCounts: number[];
+  totalWinnerVoters: number;
 }
 
 const STATE_LABELS = ["Active", "Resolving", "Resolved", "Cancelled", "Expired"];
@@ -59,54 +59,83 @@ export const STATE_COLORS: Record<string, string> = {
   Expired: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
 };
 
+export async function fetchMarketInfo(m: Contract, addr: string): Promise<MarketInfo> {
+  const [question, opts, stakeAmount, startTime, endTime, resolutionDeadline, state, totalPool, totalVoters, winnerIndices, optionVoteCounts, totalWinnerVoters] =
+    await Promise.all([
+      m.question(),
+      m.options(),
+      m.stakeAmount(),
+      m.startTime(),
+      m.endTime(),
+      m.resolutionDeadline(),
+      m.state(),
+      m.totalPool(),
+      m.totalVoters(),
+      m.winnerIndices(),
+      m.optionVoteCounts(),
+      m.totalWinnerVoters(),
+    ]);
+  return {
+    address: addr,
+    question,
+    options: Array.from(opts as string[]),
+    stakeAmount,
+    startTime: Number(startTime),
+    endTime: Number(endTime),
+    resolutionDeadline: Number(resolutionDeadline),
+    state: Number(state),
+    totalPool,
+    totalVoters: Number(totalVoters),
+    winnerIndices: (winnerIndices as bigint[]).map(Number),
+    optionVoteCounts: (optionVoteCounts as bigint[]).map(Number),
+    totalWinnerVoters: Number(totalWinnerVoters),
+  };
+}
+
 export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [votedMap, setVotedMap] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const fetchingRef = useRef(false);
 
   const fetchMarkets = useCallback(async () => {
     if (!provider || !MARKET_FACTORY_ADDRESS) return;
+    if (fetchingRef.current) return; // Prevent concurrent fetches
+    fetchingRef.current = true;
     setLoading(true);
     setError("");
     try {
       const factory = new Contract(MARKET_FACTORY_ADDRESS, MarketFactoryABI, provider);
-      const count = Number(await factory.marketCount());
+
+      // Batch-fetch all market addresses in a single call
+      let addresses: string[];
+      try {
+        addresses = await factory.getAllMarkets();
+      } catch {
+        // Fallback to sequential if getAllMarkets isn't available
+        const count = Number(await factory.marketCount());
+        addresses = [];
+        for (let i = 0; i < count; i++) {
+          addresses.push(await factory.getMarket(i));
+        }
+      }
+
       const list: MarketInfo[] = [];
 
-      for (let i = 0; i < count; i++) {
-        const addr = await factory.getMarket(i);
-        const m = new Contract(addr, OpinionMarketABI, provider);
-        const [question, optionA, optionB, stakeAmount, startTime, endTime, resolutionDeadline, state, totalPool, totalVoters, winnerIndex, winnerCount] =
-          await Promise.all([
-            m.question(),
-            m.optionA(),
-            m.optionB(),
-            m.stakeAmount(),
-            m.startTime(),
-            m.endTime(),
-            m.resolutionDeadline(),
-            m.state(),
-            m.totalPool(),
-            m.totalVoters(),
-            m.winnerIndex(),
-            m.winnerCount(),
-          ]);
-        list.push({
-          address: addr,
-          question,
-          optionA,
-          optionB,
-          stakeAmount,
-          startTime: Number(startTime),
-          endTime: Number(endTime),
-          resolutionDeadline: Number(resolutionDeadline),
-          state: Number(state),
-          totalPool,
-          totalVoters: Number(totalVoters),
-          winnerIndex: Number(winnerIndex),
-          winnerCount: Number(winnerCount),
-        });
+      // Fetch market info in parallel (batches of 5 to avoid rate limits)
+      for (let i = 0; i < addresses.length; i += 5) {
+        const batch = addresses.slice(i, i + 5);
+        const results = await Promise.allSettled(
+          batch.map(async (addr) => {
+            const m = new Contract(addr, OpinionMarketABI, provider);
+            return fetchMarketInfo(m, addr);
+          }),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled") list.push(r.value);
+          // Skip markets that fail (e.g. old / incompatible deployment)
+        }
       }
       const reversed = list.reverse(); // newest first
       setMarkets(reversed);
@@ -123,12 +152,15 @@ export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
           }),
         );
         setVotedMap(voted);
+      } else {
+        setVotedMap({});
       }
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : "Failed to load markets";
-      // Provide a user-friendly message for common contract call errors
       if (raw.includes("BAD_DATA") || raw.includes("could not decode")) {
         setError("Unable to read contract data. You may be on the wrong network.");
+      } else if (raw.includes("missing revert data") || raw.includes("data=null")) {
+        setError("Could not read market data. The contract may not be deployed on this network.");
       } else if (raw.includes("network") || raw.includes("NETWORK_ERROR")) {
         setError("Network error. Please check your connection.");
       } else {
@@ -136,11 +168,30 @@ export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
       }
     } finally {
       setLoading(false);
+      fetchingRef.current = false;
     }
   }, [provider, userAddress]);
 
   useEffect(() => {
     fetchMarkets();
+  }, [fetchMarkets]);
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    if (!provider || !MARKET_FACTORY_ADDRESS) return;
+    const id = setInterval(fetchMarkets, 30_000);
+    return () => clearInterval(id);
+  }, [fetchMarkets, provider]);
+
+  // Refetch when tab regains visibility (stale data after backgrounding)
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        fetchMarkets();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [fetchMarkets]);
 
   return { markets, votedMap, loading, error, refetch: fetchMarkets };
@@ -156,36 +207,7 @@ export function useMarketDetail(provider: AnyProvider | null, address: string) {
     setLoading(true);
     try {
       const m = new Contract(address, OpinionMarketABI, provider);
-      const [question, optionA, optionB, stakeAmount, startTime, endTime, resolutionDeadline, state, totalPool, totalVoters, winnerIndex, winnerCount] =
-        await Promise.all([
-          m.question(),
-          m.optionA(),
-          m.optionB(),
-          m.stakeAmount(),
-          m.startTime(),
-          m.endTime(),
-          m.resolutionDeadline(),
-          m.state(),
-          m.totalPool(),
-          m.totalVoters(),
-          m.winnerIndex(),
-          m.winnerCount(),
-        ]);
-      setMarket({
-        address,
-        question,
-        optionA,
-        optionB,
-        stakeAmount,
-        startTime: Number(startTime),
-        endTime: Number(endTime),
-        resolutionDeadline: Number(resolutionDeadline),
-        state: Number(state),
-        totalPool,
-        totalVoters: Number(totalVoters),
-        winnerIndex: Number(winnerIndex),
-        winnerCount: Number(winnerCount),
-      });
+      setMarket(await fetchMarketInfo(m, address));
       if (userAddress) {
         const voted = await m.hasVoted(userAddress);
         setHasVoted(voted);

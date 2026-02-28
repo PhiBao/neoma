@@ -2,11 +2,11 @@
 
 > Encrypted opinion polls with real stakes — powered by Fully Homomorphic Encryption on [Zama's fhEVM](https://docs.zama.ai/fhevm).
 
-Neoma is an **opinion market**, not a prediction market. Users pick a side on binary questions (e.g. *"CR7 or M10?"*, *"Tabs or Spaces?"*), stake ETH, and the majority side wins the pool. Think surveys and trending topics with a touch of gambling — the side with more voters takes everything.
+Neoma is an **opinion market**, not a prediction market. Users pick a side on multi-option questions (2–10 choices, e.g. *"CR7 or M10?"*, *"Best L2? Arbitrum / Optimism / Base / zkSync"*), stake ETH, and the majority side wins the pool. Think surveys and trending topics with a touch of gambling — the side with more voters takes everything.
 
 Votes are encrypted client-side, tallied homomorphically on-chain, and only the winning side is revealed. Individual choices stay permanently private.
 
-**Live on Sepolia testnet** · Smart Contracts + React Frontend · 69 tests
+**Live on Sepolia testnet** · Smart Contracts + React Frontend · 62 tests
 
 ---
 
@@ -33,6 +33,7 @@ This makes Neoma a real-world demonstration of how FHE turns any survey, poll, o
 ┌──────────────────────────────────────────────────────────┐
 │                     Frontend (React)                      │
 │  EIP-6963 Wallet · FHE Encryption · ethers.js v6         │
+│  Glass UI · Skeleton loading · Wallet-less browsing      │
 │                                                           │
 │  ┌─────────────┐  encryptVote()  ┌──────────────────────┐│
 │  │ @zama-fhe/  │───────────────→ │  Vote TX with        ││
@@ -44,15 +45,17 @@ This makes Neoma a real-world demonstration of how FHE turns any survey, poll, o
                     │           Sepolia (fhEVM-enabled)            │
                     │                                              │
                     │  MarketFactory ──creates──→ OpinionMarket    │
+                    │                             (2-10 options)   │
                     │                                              │
                     │  vote():                                     │
                     │    euint8 choice = FHE.fromExternal(proof)   │
-                    │    _counterA = FHE.add(_counterA, voteForA)  │
-                    │    _counterB = FHE.add(_counterB, voteForB)  │
+                    │    for each option i:                        │
+                    │      isVoteForI = FHE.eq(choice, i)          │
+                    │      counters[i] += FHE.select(…, 1, 0)     │
                     │                                              │
                     │  resolveMarket():                            │
-                    │    ebool aWins = FHE.ge(_counterA, _counterB)│
-                    │    FHE.makePubliclyDecryptable(winner)       │
+                    │    FHE.ge() across all counters → winner     │
+                    │    FHE.makePubliclyDecryptable(handles[])    │
                     │                 │                             │
                     └─────────────────┼────────────────────────────┘
                                       │  KMS decryption callback
@@ -109,11 +112,11 @@ This makes Neoma a real-world demonstration of how FHE turns any survey, poll, o
 | Component | Tech |
 |-----------|------|
 | UI | React 19 + TypeScript 5.9 + Vite 7 |
-| Styling | Tailwind CSS v4 |
+| Styling | Tailwind CSS v4 (glass morphism, ambient orbs, animated bars) |
 | Blockchain | ethers.js v6 |
 | FHE Client | `@zama-fhe/relayer-sdk` v0.4 (WASM) |
 | Wallet | EIP-6963 multi-wallet discovery |
-| Tests | Vitest 3.2 + Testing Library (69 tests) |
+| Tests | Vitest 3.2 + Testing Library (62 tests) |
 
 ---
 
@@ -121,33 +124,28 @@ This makes Neoma a real-world demonstration of how FHE turns any survey, poll, o
 
 ### How Votes Stay Private
 
-1. **Client-side encryption** — The browser loads the Zama WASM module via `@zama-fhe/relayer-sdk`. When a user votes, their choice (0 or 1) is encrypted into an `externalEuint8` with a zero-knowledge proof that the plaintext is valid, all before leaving the browser.
+1. **Client-side encryption** — The browser loads the Zama WASM module via `@zama-fhe/relayer-sdk`. When a user votes, their choice (0 to N−1 for N options) is encrypted into an `externalEuint8` with a zero-knowledge proof that the plaintext is valid, all before leaving the browser.
 
-2. **On-chain homomorphic tallying** — The contract never decrypts individual votes. Instead it uses FHE arithmetic:
+2. **On-chain homomorphic tallying** — The contract never decrypts individual votes. Instead it uses FHE arithmetic across all option counters:
    ```solidity
-   // Normalize to binary
-   euint8 normalizedChoice = FHE.select(FHE.ne(rawChoice, FHE.asEuint8(0)),
-                                         FHE.asEuint8(1), FHE.asEuint8(0));
-   // voteForA = 1 - choice (1 if A, 0 if B)
-   euint8 voteForA = FHE.sub(FHE.asEuint8(1), normalizedChoice);
-
-   // Homomorphic counter increment — adds to encrypted running total
-   _counterA = FHE.add(_counterA, voteForA);
-   _counterB = FHE.add(_counterB, normalizedChoice);
+   // For each option i, check if user voted for it
+   ebool isVoteForI = FHE.eq(encryptedChoice, FHE.asEuint8(uint8(i)));
+   euint8 increment = FHE.select(isVoteForI, FHE.asEuint8(1), FHE.asEuint8(0));
+   _optionCounters[i] = FHE.add(_optionCounters[i], FHE.asEuint32(increment));
    ```
-   After 1000 votes, `_counterA` and `_counterB` are still encrypted 32-bit integers — no one on-chain knows the tally.
+   After 1000 votes across 5 options, all counters are still encrypted 32-bit integers — no one on-chain knows any tally.
 
-3. **Resolution via encrypted comparison** — The contract owner triggers resolution:
+3. **Resolution via encrypted comparison** — The contract owner triggers resolution, which iterates all counters to find the maximum:
    ```solidity
-   ebool aWins = FHE.ge(_counterA, _counterB);  // encrypted ≥ comparison
-   _encryptedWinnerIndex = FHE.select(aWins, FHE.asEuint8(0), FHE.asEuint8(1));
-   _encryptedWinnerCount = FHE.select(aWins, _counterA, _counterB);
-   FHE.makePubliclyDecryptable(_encryptedWinnerIndex);
-   FHE.makePubliclyDecryptable(_encryptedWinnerCount);
+   // Compare each option's counter to find winner(s)
+   ebool isGe = FHE.ge(_optionCounters[i], bestCount);
+   bestIdx = FHE.select(isGe, FHE.asEuint8(uint8(i)), bestIdx);
+   bestCount = FHE.select(isGe, _optionCounters[i], bestCount);
+   // All counters + winner marked for decryption
+   FHE.makePubliclyDecryptable(handle);
    ```
-   Only the winner index and winner count are marked for decryption — not the individual counters.
 
-4. **KMS threshold decryption** — Zama's Key Management Service (a distributed threshold network) produces a decryption proof off-chain. Anyone can submit this proof to `finalizeResolution()`, which verifies it with `FHE.checkSignatures()` and transitions the market to Resolved.
+4. **KMS threshold decryption** — Zama's Key Management Service (a distributed threshold network) produces a decryption proof off-chain. Anyone can submit this proof to `finalizeResolution()`, which verifies it with `FHE.checkSignatures()` and transitions the market to Resolved. Ties are supported — multiple winners share the pool.
 
 5. **Private claim verification** — When a voter claims their payout, the contract computes `FHE.eq(userVote, winnerIndex)` on their encrypted vote without revealing it. The KMS decrypts only the boolean eligibility result.
 
@@ -172,8 +170,8 @@ Every FHE ciphertext has an on-chain Access Control List. The contract calls `FH
 ```
 neoma/
 ├── contracts/
-│   ├── OpinionMarket.sol           # Core market: vote, resolve, claim (455 LOC)
-│   ├── MarketFactory.sol           # Factory: deploy + index markets (103 LOC)
+│   ├── OpinionMarket.sol           # Core market: vote, resolve, claim (2-10 options)
+│   ├── MarketFactory.sol           # Factory: deploy + index markets
 │   └── interfaces/
 │       ├── IOpinionMarket.sol      # Full interface + errors + events
 │       └── IMarketFactory.sol      # Factory interface
@@ -182,21 +180,26 @@ neoma/
 ├── test/                           # Hardhat integration tests
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx                 # Root: routing, owner check, tabs
+│   │   ├── App.tsx                 # Root: routing, owner check, tabs, ambient bg
 │   │   ├── fhe.ts                  # FHE encryption wrapper (relayer-sdk)
+│   │   ├── main.tsx                # Entry point with ErrorBoundary
+│   │   ├── index.css               # Animations: glass, card-glow, skeleton, bar-fill
 │   │   ├── components/
-│   │   │   ├── MarketCard.tsx      # Card with direct voting + result bars
+│   │   │   ├── MarketCard.tsx      # Card with inline voting + result bars
 │   │   │   ├── MarketDetail.tsx    # Full detail: vote/resolve/claim/expire
 │   │   │   ├── AdminPage.tsx       # Owner-only market creation
-│   │   │   ├── CreateMarketModal.tsx
-│   │   │   ├── Header.tsx          # Wallet connect + network status
-│   │   │   └── WalletPickerModal.tsx  # EIP-6963 multi-wallet picker
+│   │   │   ├── Header.tsx          # Glass nav + wallet connect + network status
+│   │   │   ├── ErrorBoundary.tsx   # Crash recovery wrapper
+│   │   │   └── WalletPickerModal.tsx  # EIP-6963 multi-wallet picker (a11y)
 │   │   ├── hooks/
-│   │   │   ├── useMarkets.ts       # Market data fetching + state helpers
-│   │   │   └── useWallet.ts        # EIP-6963 wallet management
+│   │   │   ├── useMarkets.ts       # Market data fetching + auto-refresh + batching
+│   │   │   ├── useWallet.ts        # EIP-6963 wallet + read-only provider fallback
+│   │   │   └── useFheLoading.ts    # Observable FHE WASM loading state
+│   │   ├── utils/
+│   │   │   └── parseContractError.ts  # Centralized contract error parsing
 │   │   ├── contracts/
 │   │   │   └── index.ts            # ABIs + deployed addresses
-│   │   └── __tests__/              # 69 tests (Vitest + Testing Library)
+│   │   └── __tests__/              # 62 tests (Vitest + Testing Library)
 │   └── package.json
 ├── hardhat.config.ts
 └── package.json
@@ -238,6 +241,7 @@ Copy the deployed factory address and update `frontend/.env`:
 
 ```env
 VITE_FACTORY_ADDRESS=0x<your-deployed-factory-address>
+VITE_INFURA_KEY=<your-infura-api-key>
 ```
 
 ### 4. Run Frontend
@@ -248,12 +252,12 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`, connect your wallet, and create your first market.
+Open `http://localhost:5173`. Markets load without a wallet using the Infura read-only provider. Connect your wallet to vote or create markets.
 
 ### 5. Run Tests
 
 ```bash
-# Frontend tests (69 tests)
+# Frontend tests (62 tests)
 cd frontend && npm test
 
 # Contract compilation check
@@ -264,37 +268,47 @@ cd .. && npx hardhat compile
 
 ## Usage Flow
 
-1. **Owner creates a market** — Sets question, two options, stake amount, and voting window via the Admin page.
-2. **Users vote** — Connect wallet, pick an option on any market card. The vote is FHE-encrypted in-browser and submitted with the stake.
-3. **Voting ends** — The market badge switches to "Voting Ended". No more votes accepted.
-4. **Owner resolves** — Triggers `resolveMarket()` which performs encrypted comparison and requests KMS decryption. Market enters "Resolving" state.
-5. **KMS decrypts** — After ~1–5 minutes, the Zama KMS gateway delivers the decryption proof. Anyone can call `finalizeResolution()` with this proof.
-6. **Results shown** — The market displays the winner, vote percentages for each option, and payout per winner.
-7. **Winners claim** — Each winner calls `prepareClaim()` → `executeClaim()` (with another KMS proof) to receive their share of the pool.
-8. **Timeout safety** — If resolution doesn't happen within 24h of voting end, anyone can call `expireMarket()` and all voters get their stakes refunded.
+1. **Browse without a wallet** — Markets load via Infura read-only provider. View questions, options, results, and stats without connecting.
+2. **Owner creates a market** — Sets question, 2–10 options, stake amount, and voting window via the Admin page.
+3. **Users vote** — Click an option on any market card. If not connected, the wallet picker opens automatically. The vote is FHE-encrypted in-browser and submitted with the stake. A confirmation panel shows the choice and stake before submitting.
+4. **Voting ends** — The market badge switches to "Voting Ended". No more votes accepted.
+5. **Owner resolves** — Triggers `resolveMarket()` which performs encrypted comparison across all option counters and requests KMS decryption. Market enters "Resolving" state.
+6. **KMS decrypts** — After ~1–5 minutes, the Zama KMS gateway delivers the decryption proof. Anyone can call `finalizeResolution()` with this proof.
+7. **Results shown** — The market displays the winner(s), animated vote percentage bars for each option, and payout per winner. Ties are supported.
+8. **Winners claim** — Each winner calls `prepareClaim()` → `executeClaim()` (with another KMS proof) to receive their share of the pool.
+9. **Timeout safety** — If resolution doesn't happen within 24h of voting end, anyone can call `expireMarket()` and all voters get their stakes refunded.
 
 ---
 
 ## Roadmap
 
-### Phase 1 — Core Protocol ✅ *(current)*
-- [x] FHE-encrypted binary voting with homomorphic tallying
+### Phase 1 — Core Protocol ✅
+- [x] FHE-encrypted voting with homomorphic tallying
+- [x] Multi-option markets (2–10 choices with FHE-encrypted counters per option)
 - [x] Full market lifecycle (create → vote → resolve → claim/refund)
+- [x] Tie detection and multi-winner payouts
 - [x] Owner-restricted market creation and resolution
-- [x] React frontend with direct card voting and wallet discovery (EIP-6963)
-- [x] Client-side FHE encryption via Zama relayer SDK
-- [x] Live percentage bars and winner display after resolution
-- [x] 69 unit tests across 7 test files
 
-### Phase 2 — Enhanced UX
+### Phase 2 — Production Frontend ✅
+- [x] React frontend with wallet-less browsing (Infura read-only fallback)
+- [x] EIP-6963 multi-wallet discovery + auto-connect prompt on vote
+- [x] Client-side FHE encryption via Zama relayer SDK with loading progress
+- [x] Glass morphism UI with ambient effects, skeleton loading, animated bars
+- [x] Inline card voting (binary) + full detail page (multi-option)
+- [x] Prominent vote confirmation panel with stake display
+- [x] Live countdown timers, auto-refresh (30s + visibility change)
+- [x] Search & filter markets by name or state
+- [x] Dismissible errors, copy address, Etherscan links, dynamic page titles
+- [x] Keyboard-accessible wallet picker (focus trap, Escape, aria)
+- [x] ErrorBoundary crash recovery, centralized error parsing
+- [x] React.memo optimization, batch market loading
+- [x] Mobile-responsive header + hamburger menu
+- [x] 62 unit tests across 6 test files
+
+### Phase 3 — Protocol Expansion
 - [ ] Auto-finalization bot (watches for KMS proofs, calls `finalizeResolution` automatically)
 - [ ] Batch claim execution for all eligible voters
 - [ ] Real-time market updates via event subscriptions (WebSocket provider)
-- [ ] Mobile-responsive design + PWA support
-- [ ] Market search, filtering, and sorting
-
-### Phase 3 — Protocol Expansion
-- [ ] Multi-option markets (3+ choices with FHE-encrypted counters per option)
 - [ ] Variable stake tiers with weighted voting
 - [ ] Market categories and tagging system
 - [ ] On-chain market creator fees (configurable % of pool)
@@ -315,7 +329,7 @@ cd .. && npx hardhat compile
 |--------|-------------|
 | `npx hardhat compile` | Compile all Solidity contracts |
 | `npx hardhat deploy --network sepolia` | Deploy to Sepolia testnet |
-| `npm run test` *(frontend/)* | Run 69 frontend tests |
+| `npm run test` *(frontend/)* | Run 62 frontend tests |
 | `npm run dev` *(frontend/)* | Start dev server at localhost:5173 |
 | `npm run build` *(frontend/)* | Production build |
 

@@ -34,8 +34,7 @@ contract MarketFactory is IMarketFactory {
     /// @inheritdoc IMarketFactory
     function createMarket(
         string calldata questionText,
-        string calldata optionAText,
-        string calldata optionBText,
+        string[] calldata optionTexts,
         uint256 stakeAmount_,
         uint256 startTime_,
         uint256 endTime_
@@ -45,15 +44,16 @@ contract MarketFactory is IMarketFactory {
 
         // ── Input validation ──
         if (bytes(questionText).length == 0) revert EmptyQuestion();
-        if (bytes(optionAText).length == 0) revert EmptyOption();
-        if (bytes(optionBText).length == 0) revert EmptyOption();
+        if (optionTexts.length < 2) revert InvalidOptionCount();
+        for (uint256 i = 0; i < optionTexts.length; i++) {
+            if (bytes(optionTexts[i]).length == 0) revert EmptyOption();
+        }
         if (stakeAmount_ == 0) revert InvalidStake();
 
         // ── Deploy new market contract ──
         OpinionMarket deployed = new OpinionMarket(
             questionText,
-            optionAText,
-            optionBText,
+            optionTexts,
             stakeAmount_,
             startTime_,
             endTime_,

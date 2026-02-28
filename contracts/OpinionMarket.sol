@@ -6,10 +6,11 @@ import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 import {IOpinionMarket} from "./interfaces/IOpinionMarket.sol";
 import {IMarketFactory} from "./interfaces/IMarketFactory.sol";
 
-/// @title OpinionMarket — Privacy-preserving binary opinion market
+/// @title OpinionMarket — Privacy-preserving multi-option opinion market
 /// @author Neoma Protocol
-/// @notice Accepts FHE-encrypted votes, tallies them homomorphically, and settles
-///         payouts without ever exposing individual choices on-chain.
+/// @notice Accepts FHE-encrypted votes for any number of options (2–10),
+///         tallies them homomorphically, and settles payouts without ever
+///         exposing individual choices on-chain.
 ///
 /// Lifecycle:
 ///   Active  →  resolveMarket()  →  Resolving  →  finalizeResolution()  →  Resolved
@@ -24,23 +25,22 @@ import {IMarketFactory} from "./interfaces/IMarketFactory.sol";
 /// Privacy guarantees:
 ///   • Individual votes are never decrypted
 ///   • Encrypted counters are incremented via FHE.add
-///   • Only the winner INDEX and winner COUNT are revealed at resolution
+///   • Only the per-option vote COUNTS are revealed at resolution
 ///   • Per-voter eligibility is revealed only when that voter opts to claim
 contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     // ═══════════════════════════════════════════════════════════════
     //  CONSTANTS
     // ═══════════════════════════════════════════════════════════════
 
-    /// @dev Default grace period after endTime before the market can be expired
     uint256 public constant RESOLUTION_GRACE_PERIOD = 24 hours;
+    uint8 public constant MAX_OPTIONS = 10;
 
     // ═══════════════════════════════════════════════════════════════
     //  STORAGE — Market Metadata
     // ═══════════════════════════════════════════════════════════════
 
     string private _question;
-    string private _optionA;
-    string private _optionB;
+    string[] private _options;
     uint256 private _stakeAmount;
     uint256 private _startTime;
     uint256 private _endTime;
@@ -54,29 +54,30 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     MarketState private _state;
     uint256 private _totalPool;
     uint256 private _totalVoters;
-    uint8 private _winnerIndex;
-    uint32 private _winnerCount;
 
     // ═══════════════════════════════════════════════════════════════
     //  STORAGE — FHE Encrypted Values
     // ═══════════════════════════════════════════════════════════════
 
-    /// @dev Homomorphic vote accumulators (incremented via FHE.add)
-    euint32 private _counterA;
-    euint32 private _counterB;
+    /// @dev One encrypted counter per option, incremented via FHE.add
+    euint32[] private _counters;
 
-    /// @dev Encrypted resolution results (set in resolveMarket, decrypted in finalize)
-    euint8 private _encryptedWinnerIndex;
-    euint32 private _encryptedWinnerCount;
+    // ═══════════════════════════════════════════════════════════════
+    //  STORAGE — Resolution Results (set in finalizeResolution)
+    // ═══════════════════════════════════════════════════════════════
+
+    uint8[] private _winnerIndices;
+    uint32[] private _optionVoteCounts;
+    uint32 private _totalWinnerVoters;
 
     // ═══════════════════════════════════════════════════════════════
     //  STORAGE — Per-Voter
     // ═══════════════════════════════════════════════════════════════
 
     mapping(address => bool) private _hasVoted;
-    mapping(address => euint8) private _userVotes; // encrypted choice (0 | 1)
+    mapping(address => euint8) private _userVotes;
     mapping(address => bool) private _hasClaimed;
-    mapping(address => ebool) private _claimEligibility; // encrypted equality check
+    mapping(address => ebool) private _claimEligibility;
     mapping(address => bool) private _claimPrepared;
     mapping(address => bool) private _hasRefunded;
     address[] private _voters;
@@ -86,26 +87,24 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     // ═══════════════════════════════════════════════════════════════
 
     /// @param questionText   The question being voted on
-    /// @param optionAText    Label for option A (index 0)
-    /// @param optionBText    Label for option B (index 1)
+    /// @param optionTexts    Array of option labels (2–10)
     /// @param stakePerVote   Exact ETH (in wei) each voter must stake
     /// @param marketStart    Unix timestamp — voting opens
     /// @param marketEnd      Unix timestamp — voting closes
     /// @param factoryAddr    Address of the MarketFactory that deployed this contract
     constructor(
         string memory questionText,
-        string memory optionAText,
-        string memory optionBText,
+        string[] memory optionTexts,
         uint256 stakePerVote,
         uint256 marketStart,
         uint256 marketEnd,
         address factoryAddr
     ) {
         if (marketStart >= marketEnd) revert InvalidTimings();
+        if (optionTexts.length < 2 || optionTexts.length > MAX_OPTIONS)
+            revert InvalidOptionCount();
 
         _question = questionText;
-        _optionA = optionAText;
-        _optionB = optionBText;
         _stakeAmount = stakePerVote;
         _startTime = marketStart;
         _endTime = marketEnd;
@@ -113,11 +112,12 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         _state = MarketState.Active;
         factory = factoryAddr;
 
-        // Initialize encrypted counters as proper encrypted zeros
-        _counterA = FHE.asEuint32(0);
-        _counterB = FHE.asEuint32(0);
-        FHE.allowThis(_counterA);
-        FHE.allowThis(_counterB);
+        for (uint256 i = 0; i < optionTexts.length; i++) {
+            _options.push(optionTexts[i]);
+            euint32 counter = FHE.asEuint32(0);
+            FHE.allowThis(counter);
+            _counters.push(counter);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -136,31 +136,23 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         if (msg.value != _stakeAmount) revert InsufficientStake();
 
         euint8 rawChoice = FHE.fromExternal(encryptedChoice, inputProof);
+        uint256 n = _options.length;
 
-        // Normalize to binary: 0 → A, any non-zero → B
-        ebool isNonZero = FHE.ne(rawChoice, FHE.asEuint8(0));
-        euint8 normalizedChoice = FHE.select(
-            isNonZero,
-            FHE.asEuint8(1),
-            FHE.asEuint8(0)
-        );
+        // Cache encrypted constants for gas efficiency
+        euint32 encOne = FHE.asEuint32(1);
+        euint32 encZero = FHE.asEuint32(0);
 
-        // voteForA = 1 - normalizedChoice  (1 if A, 0 if B)
-        euint8 voteForA = FHE.sub(FHE.asEuint8(1), normalizedChoice);
+        // For each option, conditionally increment its counter
+        for (uint8 i = 0; i < n; i++) {
+            ebool isThisOption = FHE.eq(rawChoice, FHE.asEuint8(i));
+            euint32 increment = FHE.select(isThisOption, encOne, encZero);
+            _counters[i] = FHE.add(_counters[i], increment);
+            FHE.allowThis(_counters[i]);
+        }
 
-        // Homomorphic counter update
-        _counterA = FHE.add(_counterA, voteForA);
-        _counterB = FHE.add(_counterB, normalizedChoice);
-
-        // Store encrypted choice for claim verification
-        _userVotes[msg.sender] = normalizedChoice;
-
-        // ACL
-        FHE.allowThis(_counterA);
-        FHE.allowThis(_counterB);
+        _userVotes[msg.sender] = rawChoice;
         FHE.allowThis(_userVotes[msg.sender]);
 
-        // Bookkeeping
         _hasVoted[msg.sender] = true;
         _voters.push(msg.sender);
         _totalPool += msg.value;
@@ -170,7 +162,7 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  RESOLUTION  —  Step 1:  Encrypted computation
+    //  RESOLUTION — Step 1: Mark counters for decryption
     // ═══════════════════════════════════════════════════════════════
 
     /// @inheritdoc IOpinionMarket
@@ -180,22 +172,9 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         if (_totalVoters == 0) revert NoVotes();
         if (msg.sender != IMarketFactory(factory).owner()) revert NotAuthorized();
 
-        // Encrypted comparison (A wins on tie)
-        ebool aWins = FHE.ge(_counterA, _counterB);
-
-        _encryptedWinnerIndex = FHE.select(
-            aWins,
-            FHE.asEuint8(0),
-            FHE.asEuint8(1)
-        );
-
-        _encryptedWinnerCount = FHE.select(aWins, _counterA, _counterB);
-
-        FHE.allowThis(_encryptedWinnerIndex);
-        FHE.allowThis(_encryptedWinnerCount);
-
-        FHE.makePubliclyDecryptable(_encryptedWinnerIndex);
-        FHE.makePubliclyDecryptable(_encryptedWinnerCount);
+        for (uint256 i = 0; i < _counters.length; i++) {
+            FHE.makePubliclyDecryptable(_counters[i]);
+        }
 
         _state = MarketState.Resolving;
 
@@ -203,7 +182,7 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  RESOLUTION  —  Step 2:  KMS-verified finalization
+    //  RESOLUTION — Step 2: KMS-verified finalization
     // ═══════════════════════════════════════════════════════════════
 
     /// @inheritdoc IOpinionMarket
@@ -213,26 +192,51 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     ) external override {
         if (_state != MarketState.Resolving) revert MarketNotResolving();
 
-        bytes32[] memory handles = new bytes32[](2);
-        handles[0] = FHE.toBytes32(_encryptedWinnerIndex);
-        handles[1] = FHE.toBytes32(_encryptedWinnerCount);
+        uint256 n = _counters.length;
+
+        // Build handles array for signature verification
+        bytes32[] memory handles = new bytes32[](n);
+        for (uint256 i = 0; i < n; i++) {
+            handles[i] = FHE.toBytes32(_counters[i]);
+        }
 
         FHE.checkSignatures(handles, abiEncodedCleartexts, decryptionProof);
 
-        (uint8 winnerIdx, uint32 winnerCnt) = abi.decode(
-            abiEncodedCleartexts,
-            (uint8, uint32)
-        );
+        // Decode all vote counts from ABI-encoded tuple (uint32, uint32, ...)
+        // Each value occupies 32 bytes, left-padded.
+        uint32[] memory counts = new uint32[](n);
+        for (uint256 i = 0; i < n; i++) {
+            bytes32 word;
+            assembly {
+                word := calldataload(add(abiEncodedCleartexts.offset, mul(i, 0x20)))
+            }
+            counts[i] = uint32(uint256(word));
+        }
 
-        _winnerIndex = winnerIdx;
-        _winnerCount = winnerCnt;
+        // Find the maximum vote count
+        uint32 maxCount = 0;
+        for (uint256 i = 0; i < n; i++) {
+            if (counts[i] > maxCount) maxCount = counts[i];
+        }
+
+        // Determine winners and tally total winning voters
+        uint32 totalWinners = 0;
+        for (uint256 i = 0; i < n; i++) {
+            _optionVoteCounts.push(counts[i]);
+            if (counts[i] == maxCount) {
+                _winnerIndices.push(uint8(i));
+                totalWinners += counts[i];
+            }
+        }
+
+        _totalWinnerVoters = totalWinners;
         _state = MarketState.Resolved;
 
-        emit MarketResolved(winnerIdx, winnerCnt);
+        emit MarketResolved(_winnerIndices, totalWinners);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  CLAIMS  —  Individual prepare
+    //  CLAIMS — Individual prepare
     // ═══════════════════════════════════════════════════════════════
 
     /// @inheritdoc IOpinionMarket
@@ -247,13 +251,10 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  CLAIMS  —  Batch prepare (auto-distribution helper)
+    //  CLAIMS — Batch prepare (auto-distribution helper)
     // ═══════════════════════════════════════════════════════════════
 
     /// @inheritdoc IOpinionMarket
-    /// @dev Anyone can call this to prepare claims for a range of voters.
-    ///      This enables "auto-distribution" — a keeper or bot calls
-    ///      batchPrepareClaims(0, voterCount) after finalization.
     function batchPrepareClaims(
         uint256 fromIndex,
         uint256 toIndex
@@ -272,10 +273,22 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         emit BatchClaimsPrepared(fromIndex, toIndex, block.timestamp);
     }
 
-    /// @dev Internal helper — computes encrypted eligibility and marks for KMS decryption
+    /// @dev Compares voter's encrypted choice against all winning indices
     function _prepareClaimFor(address voter) internal {
-        euint8 encWinner = FHE.asEuint8(_winnerIndex);
-        ebool isWinner = FHE.eq(_userVotes[voter], encWinner);
+        euint8 voterChoice = _userVotes[voter];
+
+        // Build an encrypted "match count" — 1+ means voter picked a winning option
+        euint8 matchCount = FHE.asEuint8(0);
+        euint8 one = FHE.asEuint8(1);
+        euint8 zero = FHE.asEuint8(0);
+
+        for (uint256 i = 0; i < _winnerIndices.length; i++) {
+            ebool matches = FHE.eq(voterChoice, FHE.asEuint8(_winnerIndices[i]));
+            euint8 bit = FHE.select(matches, one, zero);
+            matchCount = FHE.add(matchCount, bit);
+        }
+
+        ebool isWinner = FHE.ne(matchCount, FHE.asEuint8(0));
 
         _claimEligibility[voter] = isWinner;
         _claimPrepared[voter] = true;
@@ -285,7 +298,7 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  CLAIMS  —  Execute with KMS proof
+    //  CLAIMS — Execute with KMS proof
     // ═══════════════════════════════════════════════════════════════
 
     /// @inheritdoc IOpinionMarket
@@ -308,7 +321,7 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
 
         _hasClaimed[voter] = true;
 
-        uint256 payout = _totalPool / uint256(_winnerCount);
+        uint256 payout = _totalPool / uint256(_totalWinnerVoters);
 
         (bool success, ) = payable(voter).call{value: payout}("");
         if (!success) revert TransferFailed();
@@ -317,12 +330,10 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  TIMEOUT  —  Expiry & Refund
+    //  TIMEOUT — Expiry & Refund
     // ═══════════════════════════════════════════════════════════════
 
     /// @inheritdoc IOpinionMarket
-    /// @dev If the market hasn't been resolved by the deadline, anyone
-    ///      can mark it as Expired. All voters then get their stake back.
     function expireMarket() external override {
         if (_state != MarketState.Active && _state != MarketState.Resolving)
             revert MarketNotActive();
@@ -335,8 +346,6 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     }
 
     /// @inheritdoc IOpinionMarket
-    /// @dev Returns the exact stake amount to the voter. Callable after
-    ///      expiry OR cancellation.
     function claimRefund() external override {
         if (_state != MarketState.Expired && _state != MarketState.Cancelled)
             revert MarketNotExpired();
@@ -359,12 +368,12 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         return _question;
     }
 
-    function optionA() external view override returns (string memory) {
-        return _optionA;
+    function options() external view override returns (string[] memory) {
+        return _options;
     }
 
-    function optionB() external view override returns (string memory) {
-        return _optionB;
+    function optionCount() external view override returns (uint256) {
+        return _options.length;
     }
 
     function stakeAmount() external view override returns (uint256) {
@@ -395,12 +404,16 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         return _totalVoters;
     }
 
-    function winnerIndex() external view override returns (uint8) {
-        return _winnerIndex;
+    function winnerIndices() external view override returns (uint8[] memory) {
+        return _winnerIndices;
     }
 
-    function winnerCount() external view override returns (uint32) {
-        return _winnerCount;
+    function optionVoteCounts() external view override returns (uint32[] memory) {
+        return _optionVoteCounts;
+    }
+
+    function totalWinnerVoters() external view override returns (uint32) {
+        return _totalWinnerVoters;
     }
 
     function hasVoted(address voter) external view override returns (bool) {
@@ -429,26 +442,30 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         return _voters[index];
     }
 
-    function getEncryptedCounterA()
+    /// @notice Returns the bytes32 handles for all encrypted counters.
+    /// @dev Uses .unwrap() to avoid precompile calls in view context.
+    function getResolutionHandles()
         external
         view
         override
-        returns (euint32)
+        returns (bytes32[] memory handles)
     {
-        return _counterA;
+        uint256 n = _counters.length;
+        handles = new bytes32[](n);
+        for (uint256 i = 0; i < n; i++) {
+            handles[i] = euint32.unwrap(_counters[i]);
+        }
     }
 
-    function getEncryptedCounterB()
-        external
-        view
-        override
-        returns (euint32)
-    {
-        return _counterB;
+    /// @notice Returns the bytes32 handle for a voter's claim eligibility.
+    function getClaimEligibilityHandle(
+        address voter
+    ) external view override returns (bytes32) {
+        return ebool.unwrap(_claimEligibility[voter]);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  RECEIVE  (accept ETH stakes)
+    //  RECEIVE (accept ETH stakes)
     // ═══════════════════════════════════════════════════════════════
 
     receive() external payable {}

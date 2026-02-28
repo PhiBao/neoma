@@ -7,14 +7,9 @@
         "type": "string"
       },
       {
-        "internalType": "string",
-        "name": "optionAText",
-        "type": "string"
-      },
-      {
-        "internalType": "string",
-        "name": "optionBText",
-        "type": "string"
+        "internalType": "string[]",
+        "name": "optionTexts",
+        "type": "string[]"
       },
       {
         "internalType": "uint256",
@@ -77,6 +72,11 @@
   },
   {
     "inputs": [],
+    "name": "InvalidOptionCount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "InvalidTimings",
     "type": "error"
   },
@@ -103,6 +103,11 @@
   {
     "inputs": [],
     "name": "NoVotes",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotAuthorized",
     "type": "error"
   },
   {
@@ -231,14 +236,14 @@
     "inputs": [
       {
         "indexed": false,
-        "internalType": "uint8",
-        "name": "winnerIndex",
-        "type": "uint8"
+        "internalType": "uint8[]",
+        "name": "winnerIndices",
+        "type": "uint8[]"
       },
       {
         "indexed": false,
         "internalType": "uint32",
-        "name": "winnerCount",
+        "name": "totalWinnerVoters",
         "type": "uint32"
       }
     ],
@@ -333,6 +338,19 @@
     ],
     "name": "VoteCast",
     "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_OPTIONS",
+    "outputs": [
+      {
+        "internalType": "uint8",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
     "inputs": [],
@@ -460,11 +478,17 @@
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "getEncryptedCounterA",
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "voter",
+        "type": "address"
+      }
+    ],
+    "name": "getClaimEligibilityHandle",
     "outputs": [
       {
-        "internalType": "euint32",
+        "internalType": "bytes32",
         "name": "",
         "type": "bytes32"
       }
@@ -474,12 +498,12 @@
   },
   {
     "inputs": [],
-    "name": "getEncryptedCounterB",
+    "name": "getResolutionHandles",
     "outputs": [
       {
-        "internalType": "euint32",
-        "name": "",
-        "type": "bytes32"
+        "internalType": "bytes32[]",
+        "name": "handles",
+        "type": "bytes32[]"
       }
     ],
     "stateMutability": "view",
@@ -563,12 +587,12 @@
   },
   {
     "inputs": [],
-    "name": "optionA",
+    "name": "optionCount",
     "outputs": [
       {
-        "internalType": "string",
+        "internalType": "uint256",
         "name": "",
-        "type": "string"
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -576,12 +600,25 @@
   },
   {
     "inputs": [],
-    "name": "optionB",
+    "name": "optionVoteCounts",
     "outputs": [
       {
-        "internalType": "string",
+        "internalType": "uint32[]",
         "name": "",
-        "type": "string"
+        "type": "uint32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "options",
+    "outputs": [
+      {
+        "internalType": "string[]",
+        "name": "",
+        "type": "string[]"
       }
     ],
     "stateMutability": "view",
@@ -693,6 +730,19 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "totalWinnerVoters",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "externalEuint8",
@@ -744,25 +794,12 @@
   },
   {
     "inputs": [],
-    "name": "winnerCount",
+    "name": "winnerIndices",
     "outputs": [
       {
-        "internalType": "uint32",
+        "internalType": "uint8[]",
         "name": "",
-        "type": "uint32"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "winnerIndex",
-    "outputs": [
-      {
-        "internalType": "uint8",
-        "name": "",
-        "type": "uint8"
+        "type": "uint8[]"
       }
     ],
     "stateMutability": "view",

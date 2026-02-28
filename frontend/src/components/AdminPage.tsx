@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Contract, JsonRpcSigner, ethers } from "ethers";
 import { MARKET_FACTORY_ADDRESS, MarketFactoryABI, OpinionMarketABI } from "../contracts";
 import type { MarketInfo } from "../hooks/useMarkets";
-import { stateLabel } from "../hooks/useMarkets";
+import { stateLabel, fetchMarketInfo } from "../hooks/useMarkets";
 
 interface Props {
   signer: JsonRpcSigner | null;
@@ -14,13 +14,22 @@ export function AdminPage({ signer }: Props) {
 
   // Form state
   const [question, setQuestion] = useState("");
-  const [optionA, setOptionA] = useState("");
-  const [optionB, setOptionB] = useState("");
+  const [options, setOptions] = useState(["", ""]);
   const [stake, setStake] = useState("0.001");
-  const [durationHours, setDurationHours] = useState("24");
+  const [durationMinutes, setDurationMinutes] = useState("60");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  function addOption() {
+    if (options.length < 10) setOptions([...options, ""]);
+  }
+  function removeOption(idx: number) {
+    if (options.length > 2) setOptions(options.filter((_, i) => i !== idx));
+  }
+  function updateOption(idx: number, value: string) {
+    setOptions(options.map((o, i) => (i === idx ? value : o)));
+  }
 
   // Load markets
   const fetchMarkets = useCallback(async () => {
@@ -28,22 +37,32 @@ export function AdminPage({ signer }: Props) {
     setLoadingMarkets(true);
     try {
       const factory = new Contract(MARKET_FACTORY_ADDRESS, MarketFactoryABI, signer);
-      const count = Number(await factory.marketCount());
+
+      // Batch-fetch all market addresses
+      let addresses: string[];
+      try {
+        addresses = await factory.getAllMarkets();
+      } catch {
+        const count = Number(await factory.marketCount());
+        addresses = [];
+        for (let i = 0; i < count; i++) {
+          addresses.push(await factory.getMarket(i));
+        }
+      }
+
+      // Fetch info in parallel batches of 5
       const list: MarketInfo[] = [];
-      for (let i = 0; i < count; i++) {
-        const addr = await factory.getMarket(i);
-        const m = new Contract(addr, OpinionMarketABI, signer);
-        const [q, oA, oB, sa, st, et, rd, s, tp, tv, wi, wc] = await Promise.all([
-          m.question(), m.optionA(), m.optionB(), m.stakeAmount(),
-          m.startTime(), m.endTime(), m.resolutionDeadline(), m.state(),
-          m.totalPool(), m.totalVoters(), m.winnerIndex(), m.winnerCount(),
-        ]);
-        list.push({
-          address: addr, question: q, optionA: oA, optionB: oB,
-          stakeAmount: sa, startTime: Number(st), endTime: Number(et),
-          resolutionDeadline: Number(rd), state: Number(s), totalPool: tp,
-          totalVoters: Number(tv), winnerIndex: Number(wi), winnerCount: Number(wc),
-        });
+      for (let i = 0; i < addresses.length; i += 5) {
+        const batch = addresses.slice(i, i + 5);
+        const results = await Promise.allSettled(
+          batch.map((addr) => {
+            const m = new Contract(addr, OpinionMarketABI, signer);
+            return fetchMarketInfo(m, addr);
+          }),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled") list.push(r.value);
+        }
       }
       setMarkets(list.reverse());
     } catch {
@@ -59,27 +78,51 @@ export function AdminPage({ signer }: Props) {
 
   async function handleCreate() {
     if (!signer || !MARKET_FACTORY_ADDRESS) return;
-    if (!question.trim() || !optionA.trim() || !optionB.trim()) {
-      setError("All fields are required");
+    const trimmedOpts = options.map((o) => o.trim());
+    if (!question.trim() || trimmedOpts.some((o) => !o)) {
+      setError("Question and all options are required");
       return;
     }
+
+    // Validate stake
+    const stakeNum = parseFloat(stake);
+    if (isNaN(stakeNum) || stakeNum <= 0) {
+      setError("Stake must be a positive number");
+      return;
+    }
+
+    // Validate duration
+    const durationNum = parseInt(durationMinutes);
+    if (isNaN(durationNum) || durationNum <= 0) {
+      setError("Duration must be a positive number of minutes");
+      return;
+    }
+
     setCreating(true);
     setError("");
     setSuccess("");
     try {
       const factory = new Contract(MARKET_FACTORY_ADDRESS, MarketFactoryABI, signer);
       const now = Math.floor(Date.now() / 1000);
-      const stakeWei = ethers.parseEther(stake);
-      const duration = parseInt(durationHours) * 3600;
+      let stakeWei: bigint;
+      try {
+        stakeWei = ethers.parseEther(stake);
+      } catch {
+        setError("Invalid stake amount — use a valid ETH value like 0.001");
+        return;
+      }
+      const duration = durationNum * 60;
 
       const tx = await factory.createMarket(
-        question.trim(), optionA.trim(), optionB.trim(),
+        question.trim(), trimmedOpts,
         stakeWei, now, now + duration,
       );
       await tx.wait();
       setSuccess(`Market created! Tx: ${tx.hash.slice(0, 14)}...`);
-      setQuestion(""); setOptionA(""); setOptionB("");
-      setStake("0.001"); setDurationHours("24");
+      setQuestion("");
+      setOptions(["", ""]);
+      setStake("0.001");
+      setDurationMinutes("60");
       fetchMarkets();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Transaction failed";
@@ -97,6 +140,7 @@ export function AdminPage({ signer }: Props) {
       const tx = await contract.resolveMarket();
       await tx.wait();
       fetchMarkets();
+      setSuccess(`Market resolved! The market will now show final results.`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message.slice(0, 120) : "Resolve failed");
     }
@@ -117,10 +161,11 @@ export function AdminPage({ signer }: Props) {
 
         <div className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+            <label htmlFor="admin-question" className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
               Question
             </label>
             <input
+              id="admin-question"
               type="text" value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="e.g. Will ETH hit $10k in 2026?"
@@ -128,51 +173,108 @@ export function AdminPage({ signer }: Props) {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
-                Option A
+          {/* Dynamic options */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label htmlFor="admin-options" className="text-xs font-medium text-[var(--text-secondary)]">
+                Options ({options.length}/10)
               </label>
-              <input
-                type="text" value={optionA}
-                onChange={(e) => setOptionA(e.target.value)}
-                placeholder="e.g. Yes"
-                className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-violet-500/50"
-              />
+              {options.length < 10 && (
+                <button
+                  type="button"
+                  onClick={addOption}
+                  className="text-xs text-violet-400 hover:text-violet-300 transition cursor-pointer"
+                >
+                  + Add Option
+                </button>
+              )}
             </div>
-            <div>
-              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
-                Option B
-              </label>
-              <input
-                type="text" value={optionB}
-                onChange={(e) => setOptionB(e.target.value)}
-                placeholder="e.g. No"
-                className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-violet-500/50"
-              />
+            <div className="space-y-2">
+              {options.map((opt, idx) => (
+                <div key={idx} className="flex gap-2">
+                  <input
+                    id={idx === 0 ? "admin-options" : undefined}
+                    type="text"
+                    value={opt}
+                    onChange={(e) => updateOption(idx, e.target.value)}
+                    placeholder={`Option ${idx + 1}`}
+                    className="flex-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-violet-500/50"
+                  />
+                  {options.length > 2 && (
+                    <button
+                      type="button"
+                      onClick={() => removeOption(idx)}
+                      className="px-2.5 text-zinc-500 hover:text-red-400 transition cursor-pointer text-lg"
+                      title="Remove option"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+              <label htmlFor="admin-stake" className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                 Stake per Vote (ETH)
               </label>
               <input
+                id="admin-stake"
                 type="text" value={stake}
                 onChange={(e) => setStake(e.target.value)}
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-violet-500/50"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
-                Duration (hours)
+              <label htmlFor="admin-duration" className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+                Duration (minutes)
               </label>
               <input
-                type="number" value={durationHours}
-                onChange={(e) => setDurationHours(e.target.value)}
+                id="admin-duration"
+                type="number" value={durationMinutes}
+                onChange={(e) => setDurationMinutes(e.target.value)}
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-violet-500/50"
               />
+              <div className="flex gap-1.5 mt-1.5">
+                {[
+                  { label: "5m", val: "5" },
+                  { label: "30m", val: "30" },
+                  { label: "1h", val: "60" },
+                  { label: "24h", val: "1440" },
+                  { label: "7d", val: "10080" },
+                ].map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => setDurationMinutes(p.val)}
+                    className={`text-[10px] px-2 py-0.5 rounded border transition cursor-pointer ${
+                      durationMinutes === p.val
+                        ? "bg-violet-500/20 text-violet-400 border-violet-500/30"
+                        : "text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text-primary)] hover:border-violet-500/30"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              {(() => {
+                const mins = parseInt(durationMinutes);
+                if (isNaN(mins) || mins <= 0) return null;
+                const d = Math.floor(mins / 1440);
+                const h = Math.floor((mins % 1440) / 60);
+                const m = mins % 60;
+                const parts = [];
+                if (d > 0) parts.push(`${d}d`);
+                if (h > 0) parts.push(`${h}h`);
+                if (m > 0) parts.push(`${m}m`);
+                return (
+                  <div className="text-[10px] text-[var(--text-muted)] mt-1">
+                    = {parts.join(" ") || "0m"}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -237,6 +339,9 @@ export function AdminPage({ signer }: Props) {
           {markets.map((m) => {
             const now = Date.now() / 1000;
             const canResolve = m.state === 0 && now > m.endTime && m.totalVoters > 0;
+            const optsSummary = m.options.length <= 3
+              ? m.options.join(" · ")
+              : m.options.slice(0, 2).join(" · ") + ` +${m.options.length - 2} more`;
             return (
               <div key={m.address} className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4">
                 <div className="flex items-start justify-between gap-4">
@@ -250,14 +355,14 @@ export function AdminPage({ signer }: Props) {
                         {stateLabel(m.state)}
                       </span>
                       <span className="text-[10px] text-[var(--text-muted)]">
-                        {m.totalVoters} votes · {ethers.formatEther(m.totalPool)} ETH
+                        {m.totalVoters} votes · {ethers.formatEther(m.totalPool)} ETH · {m.options.length} options
                       </span>
                     </div>
                     <div className="text-sm font-medium text-[var(--text-primary)] truncate">
                       {m.question}
                     </div>
                     <div className="text-xs text-[var(--text-muted)] mt-1">
-                      {m.optionA} vs {m.optionB} · Ends {new Date(m.endTime * 1000).toLocaleString()}
+                      {optsSummary} · Ends {new Date(m.endTime * 1000).toLocaleString()}
                     </div>
                   </div>
                   <div className="flex gap-2 shrink-0">

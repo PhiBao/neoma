@@ -47,6 +47,18 @@ vi.mock("../fhe", () => ({
     handles: [new Uint8Array(32)],
     inputProof: new Uint8Array(0),
   }),
+  getFheLoadingState: vi.fn().mockReturnValue("idle"),
+  onFheLoadingChange: vi.fn().mockReturnValue(() => {}),
+  isFheReady: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock("../hooks/useFheLoading", () => ({
+  useFheLoading: vi.fn().mockReturnValue("idle"),
+  fheLoadingLabel: vi.fn().mockReturnValue("Encrypting…"),
+}));
+
+vi.mock("../utils/parseContractError", () => ({
+  parseContractError: vi.fn().mockReturnValue("Operation failed"),
 }));
 
 describe("MarketDetail — active market", () => {
@@ -56,7 +68,9 @@ describe("MarketDetail — active market", () => {
     rawProvider: null,
     signer: null,
     userAddress: "0xUser",
+    isOwner: false,
     onBack: vi.fn(),
+    onConnectWallet: vi.fn(),
   };
 
   beforeEach(() => {
@@ -65,8 +79,7 @@ describe("MarketDetail — active market", () => {
       market: {
         address: "0x0000000000000000000000000000000000000001",
         question: "Will BTC hit $200k?",
-        optionA: "Yes",
-        optionB: "No",
+        options: ["Yes", "No"],
         stakeAmount: BigInt(1e16),
         startTime: Math.floor(Date.now() / 1000) - 3600,
         endTime: Math.floor(Date.now() / 1000) + 86400,
@@ -74,8 +87,9 @@ describe("MarketDetail — active market", () => {
         state: 0,
         totalPool: BigInt(5e16),
         totalVoters: 5,
-        winnerIndex: 0,
-        winnerCount: 0,
+        winnerIndices: [],
+        optionVoteCounts: [],
+        totalWinnerVoters: 0,
       },
       hasVoted: false,
       loading: false,
@@ -141,17 +155,16 @@ describe("MarketDetail — active market", () => {
     expect(screen.getByText("Resolution Deadline")).toBeInTheDocument();
   });
 
-  it("shows vote button with stake amount", () => {
+  it("shows connect wallet button when not connected", () => {
     render(<MarketDetail {...defaultProps} />);
-    expect(screen.getByText(/Vote — Stake .* ETH/)).toBeInTheDocument();
+    expect(screen.getByText("Connect Wallet to Vote")).toBeInTheDocument();
   });
 
-  it("allows selecting an option", () => {
-    render(<MarketDetail {...defaultProps} />);
-    const yesBtn = screen.getByText("Yes");
-    fireEvent.click(yesBtn);
-    // After clicking, the selection should be highlighted (border-violet-500)
-    expect(yesBtn.closest("button")).toHaveClass("border-violet-500");
+  it("triggers onConnectWallet when clicking an option without signer", () => {
+    const onConnectWallet = vi.fn();
+    render(<MarketDetail {...defaultProps} onConnectWallet={onConnectWallet} />);
+    fireEvent.click(screen.getByText("Yes"));
+    expect(onConnectWallet).toHaveBeenCalledOnce();
   });
 });
 
@@ -161,8 +174,7 @@ describe("MarketDetail — resolved market", () => {
       market: {
         address: "0x0000000000000000000000000000000000000001",
         question: "Resolved question?",
-        optionA: "Alpha",
-        optionB: "Beta",
+        options: ["Alpha", "Beta"],
         stakeAmount: BigInt(1e16),
         startTime: Math.floor(Date.now() / 1000) - 86400,
         endTime: Math.floor(Date.now() / 1000) - 3600,
@@ -170,8 +182,9 @@ describe("MarketDetail — resolved market", () => {
         state: 2,
         totalPool: BigInt(5e16),
         totalVoters: 5,
-        winnerIndex: 1,
-        winnerCount: 3,
+        winnerIndices: [1],
+        optionVoteCounts: [2, 3],
+        totalWinnerVoters: 3,
       },
       hasVoted: true,
       loading: false,
@@ -185,6 +198,7 @@ describe("MarketDetail — resolved market", () => {
         rawProvider={null}
         signer={null}
         userAddress="0xUser"
+        isOwner={false}
         onBack={vi.fn()}
       />
     );
@@ -196,7 +210,7 @@ describe("MarketDetail — resolved market", () => {
 });
 
 describe("MarketDetail — loading state", () => {
-  it("shows spinner when loading", () => {
+  it("shows skeleton when loading", () => {
     mockUseMarketDetail.mockReturnValue({
       market: null,
       hasVoted: false,
@@ -211,11 +225,12 @@ describe("MarketDetail — loading state", () => {
         rawProvider={null}
         signer={null}
         userAddress=""
+        isOwner={false}
         onBack={vi.fn()}
       />
     );
 
-    const spinner = document.querySelector(".animate-spin");
-    expect(spinner).toBeTruthy();
+    const skeleton = document.querySelector(".skeleton");
+    expect(skeleton).toBeTruthy();
   });
 });

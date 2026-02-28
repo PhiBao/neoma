@@ -23,6 +23,8 @@ function App() {
   const [selectedMarket, setSelectedMarket] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("markets");
   const [isOwner, setIsOwner] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<"all" | "active" | "resolved" | "expired">("all");
 
   const configured = !!MARKET_FACTORY_ADDRESS;
 
@@ -54,8 +56,35 @@ function App() {
     if (tab === "admin" && !isOwner) setTab("markets");
   }, [isOwner, tab]);
 
+  // Filter markets by search query and state
+  const filteredMarkets = useMemo(() => {
+    let filtered = markets;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(
+        (m) =>
+          m.question.toLowerCase().includes(q) ||
+          m.options.some((o) => o.toLowerCase().includes(q)),
+      );
+    }
+    if (stateFilter !== "all") {
+      filtered = filtered.filter((m) => {
+        switch (stateFilter) {
+          case "active": return m.state === 0 && Date.now() / 1000 <= m.endTime;
+          case "resolved": return m.state === 2;
+          case "expired": return m.state === 3 || m.state === 4;
+          default: return true;
+        }
+      });
+    }
+    return filtered;
+  }, [markets, searchQuery, stateFilter]);
+
   return (
     <div className="min-h-screen flex flex-col">
+      {/* Ambient floating orbs */}
+      <div className="ambient-bg" />
+
       <Header wallet={wallet} tab={tab} onTabChange={(t) => { setTab(t); setSelectedMarket(null); }} isOwner={isOwner} />
 
       <main className="flex-1 max-w-6xl mx-auto w-full px-6 py-8">
@@ -90,22 +119,34 @@ function App() {
             rawProvider={wallet.rawProvider}
             signer={wallet.signer}
             userAddress={wallet.address}
+            isOwner={isOwner}
             onBack={() => setSelectedMarket(null)}
+            onConnectWallet={wallet.connect}
           />
         ) : (
           <>
             {/* Hero */}
-            <div className="text-center mb-10">
-              <h1 className="text-4xl font-bold tracking-tight mb-3">
-                <span className="text-violet-400">Encrypted</span> Opinion Markets
+            <div className="text-center mb-12 fade-up">
+              {/* Animated shield icon */}
+              <div className="w-16 h-16 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-violet-500/20 to-indigo-500/20 border border-violet-500/20 flex items-center justify-center float-animation">
+                <svg className="w-8 h-8 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                </svg>
+              </div>
+              <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-4">
+                <span className="text-gradient">Encrypted</span>{" "}
+                <span className="text-[var(--text-primary)]">Opinion Markets</span>
               </h1>
-              <p className="text-[var(--text-secondary)] text-lg max-w-xl mx-auto">
+              <p className="text-[var(--text-secondary)] text-lg max-w-xl mx-auto leading-relaxed">
                 Privacy-preserving markets where beliefs become encrypted capital signals.
-                <br />
+              </p>
+              <div className="flex items-center justify-center gap-2 mt-3">
+                <div className="w-1.5 h-1.5 rounded-full bg-violet-500/60"></div>
                 <span className="text-[var(--text-muted)] text-sm">
                   Powered by Fully Homomorphic Encryption on Zama FHEVM
                 </span>
-              </p>
+                <div className="w-1.5 h-1.5 rounded-full bg-violet-500/60"></div>
+              </div>
             </div>
 
             {/* Not configured warning */}
@@ -119,27 +160,66 @@ function App() {
             )}
 
             {/* Toolbar */}
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-6">
+              <h2 className="text-lg font-semibold text-[var(--text-primary)] shrink-0">
                 Markets
                 {markets.length > 0 && (
                   <span className="ml-2 text-sm text-[var(--text-muted)] font-normal">
-                    ({markets.length})
+                    ({filteredMarkets.length}{filteredMarkets.length !== markets.length ? `/${markets.length}` : ""})
                   </span>
                 )}
               </h2>
-              <button
-                onClick={refetch}
-                className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] border border-[var(--border)] rounded-lg px-3 py-1.5 transition cursor-pointer"
-              >
-                ↻ Refresh
-              </button>
+              <div className="flex flex-1 items-center gap-2">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search markets..."
+                  aria-label="Search markets"
+                  className="flex-1 min-w-0 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-violet-500/50"
+                />
+                <select
+                  value={stateFilter}
+                  onChange={(e) => setStateFilter(e.target.value as typeof stateFilter)}
+                  aria-label="Filter by state"
+                  className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-violet-500/50 cursor-pointer"
+                >
+                  <option value="all">All</option>
+                  <option value="active">Active</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="expired">Expired</option>
+                </select>
+                <button
+                  onClick={refetch}
+                  aria-label="Refresh markets"
+                  className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] border border-[var(--border)] rounded-lg px-3 py-1.5 transition cursor-pointer shrink-0"
+                >
+                  ↻
+                </button>
+              </div>
             </div>
 
-            {/* Loading */}
+            {/* Skeleton Loading */}
             {loading && (
-              <div className="flex items-center justify-center py-20">
-                <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {[0, 1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-5" style={{ animationDelay: `${i * 0.08}s` }}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="skeleton h-5 w-16 rounded-full" />
+                      <div className="skeleton h-4 w-12" />
+                    </div>
+                    <div className="skeleton h-6 w-4/5 mb-2" />
+                    <div className="skeleton h-5 w-3/5 mb-4" />
+                    <div className="flex gap-2 mb-4">
+                      <div className="skeleton h-10 flex-1 rounded-xl" />
+                      <div className="skeleton h-10 flex-1 rounded-xl" />
+                    </div>
+                    <div className="border-t border-[var(--border)] pt-3 flex justify-between">
+                      <div className="skeleton h-4 w-20" />
+                      <div className="skeleton h-4 w-16" />
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -152,19 +232,27 @@ function App() {
 
             {/* Empty state */}
             {!loading && !error && markets.length === 0 && configured && (
-              <div className="text-center py-20">
-                <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-card)] border border-[var(--border)] flex items-center justify-center">
-                  <span className="text-2xl">🗳️</span>
+              <div className="text-center py-20 fade-up">
+                <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-violet-500/10 to-indigo-500/10 border border-violet-500/20 flex items-center justify-center float-animation">
+                  <span className="text-3xl">🗳️</span>
                 </div>
-                <div className="text-[var(--text-secondary)] font-medium mb-1">No markets yet</div>
-                <div className="text-sm text-[var(--text-muted)]">Markets will appear here once the admin creates them</div>
+                <div className="text-lg text-[var(--text-secondary)] font-semibold mb-2">No markets yet</div>
+                <div className="text-sm text-[var(--text-muted)] max-w-xs mx-auto">Markets will appear here once the admin creates them. Stay tuned!</div>
+              </div>
+            )}
+
+            {/* No results for search/filter */}
+            {!loading && !error && markets.length > 0 && filteredMarkets.length === 0 && (
+              <div className="text-center py-12">
+                <div className="text-[var(--text-secondary)] font-medium mb-1">No matching markets</div>
+                <div className="text-sm text-[var(--text-muted)]">Try adjusting your search or filter</div>
               </div>
             )}
 
             {/* Market grid */}
-            {markets.length > 0 && (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {markets.map((m) => (
+            {filteredMarkets.length > 0 && (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 stagger-grid">
+                {filteredMarkets.map((m) => (
                   <MarketCard
                     key={m.address}
                     market={m}
@@ -174,6 +262,7 @@ function App() {
                     userAddress={wallet.address}
                     onNavigate={() => setSelectedMarket(m.address)}
                     onVoted={refetch}
+                    onConnectWallet={wallet.connect}
                   />
                 ))}
               </div>
@@ -183,8 +272,13 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[var(--border)] py-4 text-center text-xs text-[var(--text-muted)]">
-        neoma protocol — encrypted opinion layer • sepolia testnet
+      <footer className="border-t border-[var(--border)] py-5 text-center text-xs text-[var(--text-muted)]">
+        <div className="flex items-center justify-center gap-2">
+          <div className="w-4 h-4 rounded bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center text-white font-bold" style={{ fontSize: '7px' }}>N</div>
+          <span>neoma protocol — encrypted opinion layer</span>
+          <span className="text-[var(--border)]">•</span>
+          <span className="text-violet-400/60">sepolia testnet</span>
+        </div>
       </footer>
 
       {/* Wallet picker modal */}

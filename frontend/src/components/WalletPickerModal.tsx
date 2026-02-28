@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { EIP6963Wallet } from "../hooks/useWallet";
 
 interface Props {
@@ -8,18 +9,64 @@ interface Props {
 }
 
 export function WalletPickerModal({ wallets, onSelect, onClose, error }: Props) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const [brokenIcons, setBrokenIcons] = useState<Set<string>>(new Set());
+
+  // Lock body scroll while modal is open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Focus trap + Escape to close
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key === "Tab" && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    // Focus first focusable element on mount
+    requestAnimationFrame(() => {
+      const first = dialogRef.current?.querySelector<HTMLElement>("button");
+      first?.focus();
+    });
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="wallet-picker-title"
     >
       <div
+        ref={dialogRef}
         className="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl w-full max-w-sm mx-4 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Connect Wallet</h2>
+          <h2 id="wallet-picker-title" className="text-lg font-semibold text-[var(--text-primary)]">Connect Wallet</h2>
           <button
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
@@ -40,14 +87,18 @@ export function WalletPickerModal({ wallets, onSelect, onClose, error }: Props) 
               onClick={() => onSelect(w.provider)}
               className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-[var(--bg-secondary)] transition cursor-pointer group"
             >
-              <img
-                src={w.info.icon}
-                alt={w.info.name}
-                className="w-9 h-9 rounded-lg"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = "none";
-                }}
-              />
+              {brokenIcons.has(w.info.uuid) ? (
+                <div className="w-9 h-9 rounded-lg bg-violet-500/20 flex items-center justify-center text-violet-400 font-bold text-sm">
+                  {w.info.name.charAt(0).toUpperCase()}
+                </div>
+              ) : (
+                <img
+                  src={w.info.icon}
+                  alt={w.info.name}
+                  className="w-9 h-9 rounded-lg"
+                  onError={() => setBrokenIcons((s) => new Set(s).add(w.info.uuid))}
+                />
+              )}
               <div className="flex-1 text-left">
                 <div className="text-sm font-medium text-[var(--text-primary)] group-hover:text-violet-400 transition">
                   {w.info.name}

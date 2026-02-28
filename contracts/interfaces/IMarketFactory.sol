@@ -22,23 +22,22 @@ interface IMarketFactory {
     error EmptyQuestion();
     error EmptyOption();
     error NotOwner();
+    error InvalidOptionCount();
 
     // ═══════════════════════════════════════════════════════════════
     //  CORE FUNCTIONS
     // ═══════════════════════════════════════════════════════════════
 
-    /// @notice Deploy a new binary opinion market
+    /// @notice Deploy a new multi-option opinion market
     /// @param questionText  The market question
-    /// @param optionAText   Label for option A (index 0)
-    /// @param optionBText   Label for option B (index 1)
+    /// @param optionTexts   Array of option labels (2–10)
     /// @param stakeAmount   Exact ETH required per vote (wei)
     /// @param startTime     Voting open timestamp
     /// @param endTime       Voting close timestamp
     /// @return market       Address of the deployed OpinionMarket
     function createMarket(
         string calldata questionText,
-        string calldata optionAText,
-        string calldata optionBText,
+        string[] calldata optionTexts,
         uint256 stakeAmount,
         uint256 startTime,
         uint256 endTime

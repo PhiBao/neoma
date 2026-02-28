@@ -16,6 +16,11 @@
   },
   {
     "inputs": [],
+    "name": "InvalidOptionCount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "InvalidStake",
     "type": "error"
   },
@@ -63,14 +68,9 @@
         "type": "string"
       },
       {
-        "internalType": "string",
-        "name": "optionAText",
-        "type": "string"
-      },
-      {
-        "internalType": "string",
-        "name": "optionBText",
-        "type": "string"
+        "internalType": "string[]",
+        "name": "optionTexts",
+        "type": "string[]"
       },
       {
         "internalType": "uint256",

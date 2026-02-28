@@ -45,13 +45,15 @@ export interface WalletState {
 
 /** Read-only provider for loading data without a wallet */
 let _readProvider: JsonRpcProvider | null = null;
-export function getReadProvider(): JsonRpcProvider | null {
-  if (_readProvider) return _readProvider;
-  if (SEPOLIA_RPC && !SEPOLIA_RPC.endsWith("/v3/")) {
-    _readProvider = new JsonRpcProvider(SEPOLIA_RPC);
-    return _readProvider;
+export function getReadProvider(): JsonRpcProvider {
+  if (!_readProvider) {
+    // Pass chainId + staticNetwork to skip async eth_chainId detection,
+    // which otherwise causes a race condition on the first contract call.
+    _readProvider = new JsonRpcProvider(SEPOLIA_RPC, SEPOLIA_CHAIN_ID, {
+      staticNetwork: true,
+    });
   }
-  return null;
+  return _readProvider;
 }
 
 const EMPTY_WALLET: WalletState = {
@@ -159,13 +161,8 @@ export function useWallet() {
   // ── Disconnect ───────────────────────────────────────────
 
   const disconnect = useCallback(() => {
-    // Clean up event listeners on previous provider
-    if (rawProviderRef.current) {
-      try {
-        rawProviderRef.current.removeListener?.("accountsChanged", () => {});
-        rawProviderRef.current.removeListener?.("chainChanged", () => {});
-      } catch { /* silent */ }
-    }
+    // Note: actual event listeners are cleaned up by the useEffect return below.
+    // We just need to clear the ref so the next useEffect cycle removes them.
     rawProviderRef.current = null;
     resetFhevmInstance();
     setWallet(EMPTY_WALLET);
@@ -190,7 +187,7 @@ export function useWallet() {
             chainId: ethers.toBeHex(SEPOLIA_CHAIN_ID),
             chainName: "Sepolia Testnet",
             nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
-            rpcUrls: ["https://sepolia.infura.io/v3/"],
+            rpcUrls: [SEPOLIA_RPC],
             blockExplorerUrls: ["https://sepolia.etherscan.io"],
           }],
         });

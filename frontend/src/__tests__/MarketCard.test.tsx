@@ -9,6 +9,18 @@ vi.mock("../fhe", () => ({
     handles: [new Uint8Array(32)],
     inputProof: new Uint8Array(0),
   }),
+  getFheLoadingState: vi.fn().mockReturnValue("idle"),
+  onFheLoadingChange: vi.fn().mockReturnValue(() => {}),
+  isFheReady: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock("../hooks/useFheLoading", () => ({
+  useFheLoading: vi.fn().mockReturnValue("idle"),
+  fheLoadingLabel: vi.fn().mockReturnValue("Encrypting…"),
+}));
+
+vi.mock("../utils/parseContractError", () => ({
+  parseContractError: vi.fn().mockReturnValue("Vote failed"),
 }));
 
 vi.mock("../contracts", () => ({
@@ -19,8 +31,7 @@ function makeMarket(overrides: Partial<MarketInfo> = {}): MarketInfo {
   return {
     address: "0x0000000000000000000000000000000000000001",
     question: "Will ETH hit $10k in 2026?",
-    optionA: "Yes",
-    optionB: "No",
+    options: ["Yes", "No"],
     stakeAmount: ethers.parseEther("0.01"),
     startTime: Math.floor(Date.now() / 1000) - 3600,
     endTime: Math.floor(Date.now() / 1000) + 86400,
@@ -28,8 +39,9 @@ function makeMarket(overrides: Partial<MarketInfo> = {}): MarketInfo {
     state: 0,
     totalPool: ethers.parseEther("0.05"),
     totalVoters: 5,
-    winnerIndex: 0,
-    winnerCount: 0,
+    winnerIndices: [],
+    optionVoteCounts: [],
+    totalWinnerVoters: 0,
     ...overrides,
   };
 }
@@ -41,6 +53,7 @@ const baseProps = {
   userAddress: "",
   onNavigate: vi.fn(),
   onVoted: vi.fn(),
+  onConnectWallet: vi.fn(),
 };
 
 describe("MarketCard", () => {
@@ -96,7 +109,7 @@ describe("MarketCard", () => {
   });
 
   it("shows winner checkmark on resolved market", () => {
-    const market = makeMarket({ state: 2, winnerIndex: 0 });
+    const market = makeMarket({ state: 2, winnerIndices: [0], optionVoteCounts: [3, 2], totalWinnerVoters: 3 });
     render(<MarketCard market={market} {...baseProps} />);
     expect(screen.getByText("✓")).toBeInTheDocument();
   });
