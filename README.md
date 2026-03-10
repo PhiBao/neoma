@@ -6,7 +6,7 @@ Neoma is an **opinion market**, not a prediction market. Users pick a side on mu
 
 Votes are encrypted client-side, tallied homomorphically on-chain, and only the winning side is revealed. Individual choices stay permanently private.
 
-**Live on Sepolia testnet** · Smart Contracts + React Frontend · 62 tests
+**Live on Sepolia testnet** · Smart Contracts + React Frontend + Auto-finalization Bot · 42 contract tests + frontend tests
 
 ---
 
@@ -106,6 +106,7 @@ This makes Neoma a real-world demonstration of how FHE turns any survey, poll, o
 | FHE Library | `@fhevm/solidity` v0.11.1 (Zama) |
 | FHE Types | `ebool`, `euint8`, `euint32`, `externalEuint8` |
 | Framework | Hardhat 2.28 + TypeChain |
+| Compile | `viaIR: true` (IR pipeline for complex constructors) |
 | Network | Ethereum Sepolia (fhEVM-enabled) |
 
 ### Frontend
@@ -113,10 +114,12 @@ This makes Neoma a real-world demonstration of how FHE turns any survey, poll, o
 |-----------|------|
 | UI | React 19 + TypeScript 5.9 + Vite 7 |
 | Styling | Tailwind CSS v4 (glass morphism, ambient orbs, animated bars) |
-| Blockchain | ethers.js v6 |
+| Blockchain | ethers.js v6 (JSON-RPC + WebSocket provider) |
 | FHE Client | `@zama-fhe/relayer-sdk` v0.4 (WASM) |
+| Charts | Recharts (pie, bar, KPI cards) |
 | Wallet | EIP-6963 multi-wallet discovery |
-| Tests | Vitest 3.2 + Testing Library (62 tests) |
+| Real-time | WebSocket event subscriptions + auto-reconnect |
+| Tests | Vitest 3.2 + Testing Library |
 
 ---
 
@@ -170,36 +173,46 @@ Every FHE ciphertext has an on-chain Access Control List. The contract calls `FH
 ```
 neoma/
 ├── contracts/
-│   ├── OpinionMarket.sol           # Core market: vote, resolve, claim (2-10 options)
-│   ├── MarketFactory.sol           # Factory: deploy + index markets
+│   ├── OpinionMarket.sol           # Core market: vote, resolve, claim (2-10 options, creator fees)
+│   ├── MarketFactory.sol           # Factory: deploy + index markets (tags, fee config)
 │   └── interfaces/
 │       ├── IOpinionMarket.sol      # Full interface + errors + events
 │       └── IMarketFactory.sol      # Factory interface
 ├── deploy/
 │   └── deploy.ts                   # Hardhat deploy script
-├── test/                           # Hardhat integration tests
+├── test/                           # Hardhat integration tests (42 passing)
+├── bot/
+│   ├── autoFinalizer.ts            # Auto-finalization bot (polls KMS, calls finalizeResolution)
+│   ├── package.json
+│   └── README.md
 ├── frontend/
+│   ├── api/
+│   │   └── og.ts                   # Vercel Edge Function for OG meta tag link previews
 │   ├── src/
-│   │   ├── App.tsx                 # Root: routing, owner check, tabs, ambient bg
+│   │   ├── App.tsx                 # Root: URL hash routing, owner check, tabs, ambient bg
 │   │   ├── fhe.ts                  # FHE encryption wrapper (relayer-sdk)
 │   │   ├── main.tsx                # Entry point with ErrorBoundary
 │   │   ├── index.css               # Animations: glass, card-glow, skeleton, bar-fill
 │   │   ├── components/
-│   │   │   ├── MarketCard.tsx      # Card with inline voting + result bars
-│   │   │   ├── MarketDetail.tsx    # Full detail: vote/resolve/claim/expire
-│   │   │   ├── AdminPage.tsx       # Owner-only market creation
-│   │   │   ├── Header.tsx          # Glass nav + wallet connect + network status
+│   │   │   ├── MarketCard.tsx      # Card with inline voting + result bars + tag pills
+│   │   │   ├── MarketDetail.tsx    # Full detail: vote/resolve/claim/expire + share button
+│   │   │   ├── AdminPage.tsx       # Owner-only market creation (tags, fee config)
+│   │   │   ├── Header.tsx          # Glass nav + 3-tab (Markets/Analytics/Admin) + WS status
+│   │   │   ├── ActivityFeed.tsx    # Real-time event timeline (global + per-market)
+│   │   │   ├── AnalyticsDashboard.tsx # KPI cards, charts, top markets (Recharts)
 │   │   │   ├── ErrorBoundary.tsx   # Crash recovery wrapper
 │   │   │   └── WalletPickerModal.tsx  # EIP-6963 multi-wallet picker (a11y)
 │   │   ├── hooks/
-│   │   │   ├── useMarkets.ts       # Market data fetching + auto-refresh + batching
+│   │   │   ├── useMarkets.ts       # Market data fetching + WS subscriptions + tag fetching
+│   │   │   ├── useWebSocket.ts     # ethers WebSocketProvider with WebSocketCreator pattern
 │   │   │   ├── useWallet.ts        # EIP-6963 wallet + read-only provider fallback
 │   │   │   └── useFheLoading.ts    # Observable FHE WASM loading state
 │   │   ├── utils/
 │   │   │   └── parseContractError.ts  # Centralized contract error parsing
 │   │   ├── contracts/
 │   │   │   └── index.ts            # ABIs + deployed addresses
-│   │   └── __tests__/              # 62 tests (Vitest + Testing Library)
+│   │   └── __tests__/              # Frontend tests (Vitest + Testing Library)
+│   ├── vercel.json                 # COOP/COEP headers + /share rewrite for OG previews
 │   └── package.json
 ├── hardhat.config.ts
 └── package.json
@@ -305,14 +318,14 @@ cd .. && npx hardhat compile
 - [x] Mobile-responsive header + hamburger menu
 - [x] 62 unit tests across 6 test files
 
-### Phase 3 — Protocol Expansion
-- [ ] Auto-finalization bot (watches for KMS proofs, calls `finalizeResolution` automatically)
-- [ ] Batch claim execution for all eligible voters
-- [ ] Real-time market updates via event subscriptions (WebSocket provider)
-- [ ] Variable stake tiers with weighted voting
-- [ ] Market categories and tagging system
-- [ ] On-chain market creator fees (configurable % of pool)
-- [ ] Governance: community-driven market curation
+### Phase 3 — Protocol Expansion ✅
+- [x] Real-time market updates via WebSocket provider (event subscriptions + auto-reconnect)
+- [x] Activity feed (global + per-market event timeline with block scanning)
+- [x] Analytics dashboard (KPI cards, pie/bar charts, top markets, sortable table via Recharts)
+- [x] Market categories and tagging system (on-chain, up to 5 tags per market, filter by tag)
+- [x] On-chain market creator fees (configurable 0–5% of pool, deducted at claim time)
+- [x] Auto-finalization bot (Node.js script monitors Resolving markets, polls Zama KMS, auto-calls finalizeResolution)
+- [x] Shareable links with URL hash routing + Vercel Edge Function for OG meta tag previews
 
 ### Phase 4 — Decentralization & Scaling
 - [ ] Permissionless market creation (with stake-based spam prevention)
@@ -329,9 +342,11 @@ cd .. && npx hardhat compile
 |--------|-------------|
 | `npx hardhat compile` | Compile all Solidity contracts |
 | `npx hardhat deploy --network sepolia` | Deploy to Sepolia testnet |
-| `npm run test` *(frontend/)* | Run 62 frontend tests |
+| `npx hardhat test` | Run 42 contract tests (+ 7 pending KMS-only stubs) |
+| `npm run test` *(frontend/)* | Run frontend tests |
 | `npm run dev` *(frontend/)* | Start dev server at localhost:5173 |
 | `npm run build` *(frontend/)* | Production build |
+| `npm start` *(bot/)* | Run auto-finalization bot |
 
 ---
 

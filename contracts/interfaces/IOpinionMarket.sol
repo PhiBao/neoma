@@ -28,6 +28,7 @@ interface IOpinionMarket {
     event ClaimPrepared(address indexed voter, uint256 timestamp);
     event BatchClaimsPrepared(uint256 fromIndex, uint256 toIndex, uint256 timestamp);
     event RewardClaimed(address indexed voter, uint256 amount);
+    event CreatorFeeCollected(address indexed creator, uint256 amount);
     event MarketCancelled(uint256 timestamp);
     event MarketExpired(uint256 timestamp);
     event Refunded(address indexed voter, uint256 amount);
@@ -56,6 +57,7 @@ interface IOpinionMarket {
     error InvalidBatchRange();
     error NotAuthorized();
     error InvalidOptionCount();
+    error FeeTooHigh();
 
     // ═══════════════════════════════════════════════════════════════
     //  CORE FUNCTIONS
@@ -95,4 +97,6 @@ interface IOpinionMarket {
     function voterAt(uint256 index) external view returns (address);
     function getResolutionHandles() external view returns (bytes32[] memory);
     function getClaimEligibilityHandle(address voter) external view returns (bytes32);
+    function creator() external view returns (address);
+    function creatorFeeBps() external view returns (uint16);
 }

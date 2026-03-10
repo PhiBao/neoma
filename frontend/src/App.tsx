@@ -1,30 +1,87 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Contract } from "ethers";
 import { useWallet, getReadProvider } from "./hooks/useWallet";
 import { useMarkets } from "./hooks/useMarkets";
+import { useWebSocket } from "./hooks/useWebSocket";
 import { Header } from "./components/Header";
 import { MarketCard } from "./components/MarketCard";
 import { MarketDetail } from "./components/MarketDetail";
 import { AdminPage } from "./components/AdminPage";
 import { WalletPickerModal } from "./components/WalletPickerModal";
+import { ActivityFeed } from "./components/ActivityFeed";
+import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
 import { MARKET_FACTORY_ADDRESS, MarketFactoryABI } from "./contracts";
 
-type Tab = "markets" | "admin";
+type Tab = "markets" | "analytics" | "admin";
+
+// ── URL hash helpers ────────────────────────────────────────────
+function parseHash(): { tab?: Tab; market?: string } {
+  const hash = window.location.hash.slice(1); // remove #
+  if (!hash) return {};
+  const params = new URLSearchParams(hash);
+  const result: { tab?: Tab; market?: string } = {};
+  const t = params.get("tab");
+  if (t === "analytics" || t === "admin") result.tab = t;
+  const m = params.get("market");
+  if (m && /^0x[a-fA-F0-9]{40}$/.test(m)) result.market = m;
+  return result;
+}
+
+function updateHash(tab: Tab, market: string | null) {
+  const parts: string[] = [];
+  if (tab !== "markets") parts.push(`tab=${tab}`);
+  if (market) parts.push(`market=${market}`);
+  const newHash = parts.length ? `#${parts.join("&")}` : "";
+  if (window.location.hash !== newHash) {
+    window.history.pushState(null, "", newHash || window.location.pathname);
+  }
+}
 
 function App() {
   const wallet = useWallet();
+  const ws = useWebSocket();
 
   // Only use wallet.provider when on the correct chain; otherwise fall back to read-only
   const effectiveProvider = useMemo(
     () => (wallet.provider && wallet.isCorrectChain) ? wallet.provider : getReadProvider(),
     [wallet.provider, wallet.isCorrectChain],
   );
-  const { markets, votedMap, loading, error, refetch } = useMarkets(effectiveProvider, wallet.address);
-  const [selectedMarket, setSelectedMarket] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("markets");
+  const { markets, votedMap, loading, error, refetch } = useMarkets(effectiveProvider, wallet.address, ws);
+
+  // Initialize state from URL hash
+  const initial = useMemo(() => parseHash(), []);
+  const [selectedMarket, setSelectedMarket] = useState<string | null>(initial.market ?? null);
+  const [tab, setTab] = useState<Tab>(initial.tab ?? "markets");
   const [isOwner, setIsOwner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<"all" | "active" | "resolved" | "expired">("all");
+  const [tagFilter, setTagFilter] = useState<string>("");
+
+  // Sync URL hash when tab/market changes
+  useEffect(() => {
+    updateHash(tab, selectedMarket);
+  }, [tab, selectedMarket]);
+
+  // Listen for browser back/forward
+  useEffect(() => {
+    const onHashChange = () => {
+      const { tab: t, market: m } = parseHash();
+      setTab(t ?? "markets");
+      setSelectedMarket(m ?? null);
+    };
+    window.addEventListener("popstate", onHashChange);
+    return () => window.removeEventListener("popstate", onHashChange);
+  }, []);
+
+  // Stable callbacks for navigation (used in share links)
+  const navigateToMarket = useCallback((addr: string) => {
+    setTab("markets");
+    setSelectedMarket(addr);
+  }, []);
+
+  const navigateBack = useCallback(() => {
+    setSelectedMarket(null);
+  }, []);
 
   const configured = !!MARKET_FACTORY_ADDRESS;
 
@@ -56,7 +113,16 @@ function App() {
     if (tab === "admin" && !isOwner) setTab("markets");
   }, [isOwner, tab]);
 
-  // Filter markets by search query and state
+  // Collect all unique tags for the filter dropdown
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of markets) {
+      for (const t of m.tags) set.add(t);
+    }
+    return Array.from(set).sort();
+  }, [markets]);
+
+  // Filter markets by search query, state, and tag
   const filteredMarkets = useMemo(() => {
     let filtered = markets;
     if (searchQuery.trim()) {
@@ -64,7 +130,8 @@ function App() {
       filtered = filtered.filter(
         (m) =>
           m.question.toLowerCase().includes(q) ||
-          m.options.some((o) => o.toLowerCase().includes(q)),
+          m.options.some((o) => o.toLowerCase().includes(q)) ||
+          m.tags.some((t) => t.toLowerCase().includes(q)),
       );
     }
     if (stateFilter !== "all") {
@@ -77,15 +144,27 @@ function App() {
         }
       });
     }
+    if (tagFilter) {
+      filtered = filtered.filter((m) => m.tags.includes(tagFilter));
+    }
     return filtered;
-  }, [markets, searchQuery, stateFilter]);
+  }, [markets, searchQuery, stateFilter, tagFilter]);
+
+  // Build address→question lookup for the activity feed
+  const marketNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const m of markets) {
+      map[m.address.toLowerCase()] = m.question;
+    }
+    return map;
+  }, [markets]);
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* Ambient floating orbs */}
       <div className="ambient-bg" />
 
-      <Header wallet={wallet} tab={tab} onTabChange={(t) => { setTab(t); setSelectedMarket(null); }} isOwner={isOwner} />
+      <Header wallet={wallet} tab={tab} onTabChange={(t) => { setTab(t); setSelectedMarket(null); }} isOwner={isOwner} wsStatus={ws.status} />
 
       <main className="flex-1 max-w-6xl mx-auto w-full px-6 py-8">
         {/* Connect error */}
@@ -112,6 +191,11 @@ function App() {
           </div>
         ) : tab === "admin" && isOwner ? (
           <AdminPage signer={wallet.signer} />
+        ) : tab === "analytics" ? (
+          <AnalyticsDashboard
+            markets={markets}
+            onNavigate={navigateToMarket}
+          />
         ) : selectedMarket ? (
           <MarketDetail
             address={selectedMarket}
@@ -120,7 +204,7 @@ function App() {
             signer={wallet.signer}
             userAddress={wallet.address}
             isOwner={isOwner}
-            onBack={() => setSelectedMarket(null)}
+            onBack={navigateBack}
             onConnectWallet={wallet.connect}
           />
         ) : (
@@ -189,12 +273,28 @@ function App() {
                   <option value="resolved">Resolved</option>
                   <option value="expired">Expired</option>
                 </select>
+                {allTags.length > 0 && (
+                  <select
+                    value={tagFilter}
+                    onChange={(e) => setTagFilter(e.target.value)}
+                    aria-label="Filter by tag"
+                    className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-violet-500/50 cursor-pointer"
+                  >
+                    <option value="">All Tags</option>
+                    {allTags.map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                )}
                 <button
                   onClick={refetch}
+                  disabled={loading}
                   aria-label="Refresh markets"
-                  className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] border border-[var(--border)] rounded-lg px-3 py-1.5 transition cursor-pointer shrink-0"
+                  className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] border border-[var(--border)] rounded-lg px-3 py-1.5 transition cursor-pointer shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  ↻
+                  {loading ? (
+                    <span className="w-3.5 h-3.5 border-2 border-current/30 border-t-current rounded-full animate-spin inline-block" />
+                  ) : "↻"}
                 </button>
               </div>
             </div>
@@ -205,18 +305,18 @@ function App() {
                 {[0, 1, 2, 3, 4, 5].map((i) => (
                   <div key={i} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-5" style={{ animationDelay: `${i * 0.08}s` }}>
                     <div className="flex items-center gap-2 mb-3">
-                      <div className="skeleton h-5 w-16 rounded-full" />
-                      <div className="skeleton h-4 w-12" />
+                      <div className="neoma-skeleton h-5 w-16 rounded-full" />
+                      <div className="neoma-skeleton h-4 w-12" />
                     </div>
-                    <div className="skeleton h-6 w-4/5 mb-2" />
-                    <div className="skeleton h-5 w-3/5 mb-4" />
+                    <div className="neoma-skeleton h-6 w-4/5 mb-2" />
+                    <div className="neoma-skeleton h-5 w-3/5 mb-4" />
                     <div className="flex gap-2 mb-4">
-                      <div className="skeleton h-10 flex-1 rounded-xl" />
-                      <div className="skeleton h-10 flex-1 rounded-xl" />
+                      <div className="neoma-skeleton h-10 flex-1 rounded-xl" />
+                      <div className="neoma-skeleton h-10 flex-1 rounded-xl" />
                     </div>
                     <div className="border-t border-[var(--border)] pt-3 flex justify-between">
-                      <div className="skeleton h-4 w-20" />
-                      <div className="skeleton h-4 w-16" />
+                      <div className="neoma-skeleton h-4 w-20" />
+                      <div className="neoma-skeleton h-4 w-16" />
                     </div>
                   </div>
                 ))}
@@ -266,6 +366,14 @@ function App() {
                   />
                 ))}
               </div>
+            )}
+
+            {/* Activity Feed (global) */}
+            {!loading && markets.length > 0 && (
+              <ActivityFeed
+                provider={effectiveProvider}
+                marketNames={marketNames}
+              />
             )}
           </>
         )}

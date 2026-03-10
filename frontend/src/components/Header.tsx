@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useWallet } from "../hooks/useWallet";
+import type { WsStatus } from "../hooks/useWebSocket";
 
 interface Props {
   wallet: ReturnType<typeof useWallet>;
-  tab: "markets" | "admin";
-  onTabChange: (tab: "markets" | "admin") => void;
+  tab: "markets" | "analytics" | "admin";
+  onTabChange: (tab: "markets" | "analytics" | "admin") => void;
   isOwner: boolean;
+  wsStatus?: WsStatus;
 }
 
-export function Header({ wallet, tab, onTabChange, isOwner }: Props) {
+export function Header({ wallet, tab, onTabChange, isOwner, wsStatus }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const truncAddr = wallet.address
     ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
@@ -27,7 +29,13 @@ export function Header({ wallet, tab, onTabChange, isOwner }: Props) {
               <span className="text-violet-400">neo</span>
               <span className="text-[var(--text-primary)]">ma</span>
             </span>
-            <span className="hidden sm:inline text-xs text-[var(--text-muted)] border border-[var(--border)] rounded px-1.5 py-0.5 ml-1">
+            <span className="hidden sm:inline text-xs text-[var(--text-muted)] border border-[var(--border)] rounded px-1.5 py-0.5 ml-1 flex items-center gap-1.5">
+              <span
+                className={`inline-block w-1.5 h-1.5 rounded-full ${
+                  wsStatus === "connected" ? "bg-emerald-400" : wsStatus === "connecting" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"
+                }`}
+                title={wsStatus === "connected" ? "Live updates active" : wsStatus === "connecting" ? "Connecting..." : "Polling mode"}
+              />
               sepolia
             </span>
           </div>
@@ -45,6 +53,18 @@ export function Header({ wallet, tab, onTabChange, isOwner }: Props) {
               }`}
             >
               Markets
+            </button>
+            <button
+              onClick={() => onTabChange("analytics")}
+              role="tab"
+              aria-selected={tab === "analytics"}
+              className={`text-sm px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                tab === "analytics"
+                  ? "bg-violet-500/20 text-violet-400 font-medium"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              }`}
+            >
+              Analytics
             </button>
             {isOwner && (
               <button
@@ -141,6 +161,16 @@ export function Header({ wallet, tab, onTabChange, isOwner }: Props) {
               }`}
             >
               Markets
+            </button>
+            <button
+              onClick={() => { onTabChange("analytics"); setMenuOpen(false); }}
+              className={`text-sm px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                tab === "analytics"
+                  ? "bg-violet-500/20 text-violet-400 font-medium"
+                  : "text-[var(--text-muted)]"
+              }`}
+            >
+              Analytics
             </button>
             {isOwner && (
               <button

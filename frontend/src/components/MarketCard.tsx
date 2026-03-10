@@ -1,6 +1,6 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import type { MarketInfo } from "../hooks/useMarkets";
-import { displayState, STATE_COLORS, isVotingOpen as checkVotingOpen } from "../hooks/useMarkets";
+import { displayState, STATE_COLORS, STATE_ICONS, isVotingOpen as checkVotingOpen } from "../hooks/useMarkets";
 import { ethers, Contract } from "ethers";
 import type { JsonRpcSigner, Eip1193Provider } from "ethers";
 import { OpinionMarketABI } from "../contracts";
@@ -37,7 +37,7 @@ export const MarketCard = memo(function MarketCard({ market, hasVoted, signer, r
   const isActive = market.state === 0;
   const isVotingOpen = checkVotingOpen(market);
   const canVote = isVotingOpen && !hasVoted && !!signer && !!rawProvider;
-  const dState = displayState(market);
+  const dState = useMemo(() => displayState(market), [market]);
   const isBinary = market.options.length === 2;
   const isTie = market.winnerIndices.length > 1;
 
@@ -88,6 +88,7 @@ export const MarketCard = memo(function MarketCard({ market, hasVoted, signer, r
         value: market.stakeAmount,
       });
       await tx.wait();
+      setVoting(null); // Clear voting spinner before refetch
       onVoted();
     } catch (err: unknown) {
       setError(parseContractError(err));
@@ -130,7 +131,7 @@ export const MarketCard = memo(function MarketCard({ market, hasVoted, signer, r
               </div>
               <div className="h-2 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
                 <div
-                  className={`h-full rounded-full bar-fill ${isWinner ? "bg-emerald-500" : "bg-zinc-500"}`}
+                  className={`h-full rounded-full neoma-bar-fill ${isWinner ? "bg-emerald-500" : "bg-zinc-500"}`}
                   style={{ '--bar-width': `${pct / 100}` } as React.CSSProperties}
                 />
               </div>
@@ -253,14 +254,14 @@ export const MarketCard = memo(function MarketCard({ market, hasVoted, signer, r
   return (
     <div
       onClick={onNavigate}
-      className="group bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-5 cursor-pointer hover:border-violet-500/40 hover:bg-[var(--bg-card-hover)] transition-all duration-200 card-glow"
+      className="group bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-5 cursor-pointer hover:border-violet-500/40 hover:bg-[var(--bg-card-hover)] transition-all duration-200 neoma-card-glow"
     >
       {/* Top row: state badge + time */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className={`text-xs font-medium border rounded-full px-2.5 py-0.5 ${STATE_COLORS[dState] ?? STATE_COLORS.Cancelled}`}>
-            {isActive && isVotingOpen && <span className="pulse-dot inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 relative" style={{ top: '-1px' }} />}
-            {dState}
+            {isActive && isVotingOpen && <span className="neoma-pulse-dot inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 relative" style={{ top: '-1px' }} />}
+            <span aria-hidden="true" className="mr-1">{STATE_ICONS[dState] ?? ""}</span>{dState}
           </span>
           {!isBinary && (
             <span className="text-[10px] text-[var(--text-muted)] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-full px-2 py-0.5">
@@ -276,9 +277,23 @@ export const MarketCard = memo(function MarketCard({ market, hasVoted, signer, r
       </div>
 
       {/* Question */}
-      <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-4 group-hover:text-violet-300 transition-colors leading-snug">
+      <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-2 group-hover:text-violet-300 transition-colors leading-snug">
         {market.question}
       </h3>
+
+      {/* Tags */}
+      {market.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {market.tags.map((tag) => (
+            <span
+              key={tag}
+              className="text-[10px] bg-violet-500/10 text-violet-400/80 border border-violet-500/15 rounded-full px-2 py-0.5"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Option display */}
       {market.state === 2 && market.totalVoters > 0
@@ -309,10 +324,10 @@ export const MarketCard = memo(function MarketCard({ market, hasVoted, signer, r
       <div className="flex items-center justify-between text-xs text-[var(--text-muted)] pt-3 border-t border-[var(--border)]">
         <div className="flex items-center gap-4">
           <span>
-            <span className="text-[var(--text-secondary)] font-medium stat-glow">{market.totalVoters}</span> voters
+            <span className="text-[var(--text-secondary)] font-medium neoma-stat-glow">{market.totalVoters}</span> voters
           </span>
           <span>
-            <span className="text-[var(--text-secondary)] font-medium stat-glow">{pool}</span> ETH pool
+            <span className="text-[var(--text-secondary)] font-medium neoma-stat-glow">{pool}</span> ETH pool
           </span>
         </div>
         <span>{stake} ETH / vote</span>

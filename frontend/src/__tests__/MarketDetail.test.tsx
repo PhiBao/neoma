@@ -34,11 +34,20 @@ vi.mock("../hooks/useMarkets", () => ({
     Cancelled: "bg-red-500/20 text-red-400 border-red-500/30",
     Expired: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
   },
+  STATE_ICONS: {
+    Active: "●",
+    "Voting Ended": "◐",
+    Resolving: "⏳",
+    Resolved: "✓",
+    Cancelled: "✕",
+    Expired: "○",
+  },
   useMarketDetail: (...args: unknown[]) => mockUseMarketDetail(...args),
 }));
 
 vi.mock("../contracts", () => ({
   OpinionMarketABI: [],
+  MarketFactoryABI: [],
   MARKET_FACTORY_ADDRESS: "0x1234567890abcdef1234567890abcdef12345678",
 }));
 
@@ -232,7 +241,7 @@ describe("MarketDetail — loading state", () => {
       />
     );
 
-    const skeleton = document.querySelector(".skeleton");
+    const skeleton = document.querySelector(".neoma-skeleton");
     expect(skeleton).toBeTruthy();
   });
 });

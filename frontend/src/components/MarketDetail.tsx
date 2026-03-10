@@ -2,10 +2,11 @@ import { useState, useEffect, useRef } from "react";
 import { Contract, JsonRpcSigner, ethers, BrowserProvider, JsonRpcProvider } from "ethers";
 import type { Eip1193Provider } from "ethers";
 import { OpinionMarketABI } from "../contracts";
-import { displayState, STATE_COLORS, isVotingOpen as checkVotingOpen, useMarketDetail } from "../hooks/useMarkets";
+import { displayState, STATE_COLORS, STATE_ICONS, isVotingOpen as checkVotingOpen, useMarketDetail } from "../hooks/useMarkets";
 import { encryptVote, publicDecryptHandles } from "../fhe";
 import { useFheLoading, fheLoadingLabel } from "../hooks/useFheLoading";
 import { parseContractError } from "../utils/parseContractError";
+import { ActivityFeed } from "./ActivityFeed";
 
 type AnyProvider = BrowserProvider | JsonRpcProvider;
 
@@ -42,6 +43,7 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
   const [expiring, setExpiring] = useState(false);
   const [refunding, setRefunding] = useState(false);
   const [claiming, setClaiming] = useState(false);
+  const claimInFlightRef = useRef(false);
   const [claimPrepared, setClaimPrepared] = useState(false);
   const [hasClaimed, setHasClaimed] = useState(false);
   const [txHash, setTxHash] = useState("");
@@ -85,9 +87,13 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
     return () => clearInterval(id);
   }, [market]);
 
-  // Check claim status for resolved markets
+  // Check claim status for resolved markets (only when key inputs change)
+  const claimCheckKeyRef = useRef("");
   useEffect(() => {
     if (!provider || !market || market.state !== 2 || !userAddress) return;
+    const key = `${address}-${userAddress}-${market.state}`;
+    if (claimCheckKeyRef.current === key) return; // Already checked
+    claimCheckKeyRef.current = key;
     const check = async () => {
       try {
         const m = new Contract(address, OpinionMarketABI, provider);
@@ -104,6 +110,8 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
 
   async function handleClaim() {
     if (!signer || !rawProvider) return;
+    if (claimInFlightRef.current) return; // Guard against double-click
+    claimInFlightRef.current = true;
     setClaiming(true);
     setError("");
     try {
@@ -148,6 +156,7 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
     } finally {
       setClaiming(false);
       setClaimStep("");
+      claimInFlightRef.current = false;
     }
   }
 
@@ -183,6 +192,22 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
     setError("");
     try {
       const contract = new Contract(address, OpinionMarketABI, signer);
+
+      // Pre-check on-chain state to avoid stale-UI reverts
+      const currentState = Number(await contract.state());
+      if (currentState === 1) {
+        // Already in Resolving — skip resolveMarket(), go straight to finalize
+        setResolving(false);
+        await refetch(userAddress);
+        handleFinalize();
+        return;
+      }
+      if (currentState !== 0) {
+        // Market moved past Active — just refresh UI
+        await refetch(userAddress);
+        setError("Market state has changed — UI refreshed.");
+        return;
+      }
 
       // Step 1: Resolve market (mark counters for decryption)
       setResolveStep("Marking counters for decryption...");
@@ -220,6 +245,8 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
       await refetch(userAddress);
     } catch (err: unknown) {
       setError(parseContractError(err));
+      // Auto-refresh to sync UI with on-chain state after a revert
+      await refetch(userAddress);
     } finally {
       setResolving(false);
       setResolveStep("");
@@ -263,6 +290,7 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
       await refetch(userAddress);
     } catch (err: unknown) {
       setError(parseContractError(err));
+      await refetch(userAddress);
     } finally {
       setResolving(false);
       setResolveStep("");
@@ -306,28 +334,28 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
   if (loading || !market) {
     return (
       <div className="max-w-2xl mx-auto">
-        <div className="skeleton h-5 w-32 mb-6" />
+        <div className="neoma-skeleton h-5 w-32 mb-6" />
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl overflow-hidden">
           <div className="p-6 border-b border-[var(--border)]">
             <div className="flex gap-2 mb-3">
-              <div className="skeleton h-5 w-16 rounded-full" />
-              <div className="skeleton h-5 w-20" />
+              <div className="neoma-skeleton h-5 w-16 rounded-full" />
+              <div className="neoma-skeleton h-5 w-20" />
             </div>
-            <div className="skeleton h-8 w-4/5 mb-2" />
-            <div className="skeleton h-4 w-2/3" />
+            <div className="neoma-skeleton h-8 w-4/5 mb-2" />
+            <div className="neoma-skeleton h-4 w-2/3" />
           </div>
           <div className="grid grid-cols-3 divide-x divide-[var(--border)] border-b border-[var(--border)]">
             {[0, 1, 2].map((i) => (
               <div key={i} className="p-4 flex flex-col items-center gap-1">
-                <div className="skeleton h-6 w-12" />
-                <div className="skeleton h-3 w-16" />
+                <div className="neoma-skeleton h-6 w-12" />
+                <div className="neoma-skeleton h-3 w-16" />
               </div>
             ))}
           </div>
           <div className="p-6 space-y-3">
-            <div className="skeleton h-12 rounded-xl" />
-            <div className="skeleton h-12 rounded-xl" />
-            <div className="skeleton h-12 w-full rounded-xl" />
+            <div className="neoma-skeleton h-12 rounded-xl" />
+            <div className="neoma-skeleton h-12 rounded-xl" />
+            <div className="neoma-skeleton h-12 w-full rounded-xl" />
           </div>
         </div>
       </div>
@@ -351,22 +379,49 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
 
   return (
     <div className="max-w-2xl mx-auto">
-      {/* Back button */}
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] mb-6 transition cursor-pointer"
-      >
-        ← Back to Markets
-      </button>
+      {/* Back + Share buttons */}
+      <div className="flex items-center justify-between mb-6">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
+        >
+          ← Back to Markets
+        </button>
+        <button
+          onClick={() => {
+            // /share?market= path provides OG previews for link unfurling
+            const url = `${window.location.origin}/share?market=${address}`;
+            navigator.clipboard.writeText(url).then(() => {
+              setCopied(true);
+              clearTimeout(copiedTimeoutRef.current);
+              copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+            });
+          }}
+          className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-violet-400 border border-[var(--border)] hover:border-violet-500/40 rounded-lg px-3 py-1.5 transition cursor-pointer"
+          title="Copy shareable link"
+        >
+          {copied ? (
+            <>
+              <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+              <span className="text-emerald-400">Copied!</span>
+            </>
+          ) : (
+            <>
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.54a4.5 4.5 0 00-1.242-7.244l-4.5-4.5a4.5 4.5 0 00-6.364 6.364L4.34 8.374" /></svg>
+              Share
+            </>
+          )}
+        </button>
+      </div>
 
       {/* Card */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl overflow-hidden fade-up">
         {/* Header */}
-        <div className="p-6 border-b border-[var(--border)] glass">
+        <div className="p-6 border-b border-[var(--border)] neoma-glass">
           <div className="flex items-center gap-3 mb-3">
             <span className={`text-xs font-medium border rounded-full px-2.5 py-0.5 ${STATE_COLORS[dState] ?? ""}`}>
-              {isVotingOpen && <span className="pulse-dot inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 relative" style={{ top: '-1px' }} />}
-              {dState}
+              {isVotingOpen && <span className="neoma-pulse-dot inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 relative" style={{ top: '-1px' }} />}
+              <span aria-hidden="true" className="mr-1">{STATE_ICONS[dState] ?? ""}</span>{dState}
             </span>
             {optCount > 2 && (
               <span className="text-[10px] text-[var(--text-muted)] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-full px-2 py-0.5">
@@ -417,15 +472,15 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
         {/* Stats */}
         <div className="grid grid-cols-3 divide-x divide-[var(--border)] border-b border-[var(--border)]">
           <div className="p-4 text-center">
-            <div className="text-lg font-bold text-[var(--text-primary)] stat-glow">{pool}</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] neoma-stat-glow">{pool}</div>
             <div className="text-xs text-[var(--text-muted)]">ETH Pool</div>
           </div>
           <div className="p-4 text-center">
-            <div className="text-lg font-bold text-[var(--text-primary)] stat-glow">{market.totalVoters}</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] neoma-stat-glow">{market.totalVoters}</div>
             <div className="text-xs text-[var(--text-muted)]">Voters</div>
           </div>
           <div className="p-4 text-center">
-            <div className="text-lg font-bold text-[var(--text-primary)] stat-glow">{stake}</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] neoma-stat-glow">{stake}</div>
             <div className="text-xs text-[var(--text-muted)]">ETH / vote</div>
           </div>
         </div>
@@ -479,7 +534,7 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
                         </div>
                         <div className="h-3 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
                           <div
-                            className={`h-full rounded-full bar-fill ${isWinner ? "bg-emerald-500" : "bg-zinc-500"}`}
+                            className={`h-full rounded-full neoma-bar-fill ${isWinner ? "bg-emerald-500" : "bg-zinc-500"}`}
                             style={{ '--bar-width': `${pct / 100}` } as React.CSSProperties}
                           />
                         </div>
@@ -596,7 +651,7 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
                   <div className="text-center mb-3">
                     <div className="text-xs text-[var(--text-muted)] mb-1">You are voting for</div>
                     <div className="text-lg font-bold text-violet-300">"{market.options[selectedOption]}"</div>
-                    <div className="text-sm text-[var(--text-secondary)] mt-1">Stake: <span className="font-semibold text-violet-400">{stake} ETH</span></div>
+                    <div className="text-sm text-[var(--text-secondary)] mt-1">Stake: <span className="font-semibold text-violet-400">{stake} ETH</span> <span className="text-[var(--text-muted)]">+ gas</span></div>
                   </div>
                   <div className="flex gap-3">
                     <button
@@ -746,6 +801,16 @@ export function MarketDetail({ address, provider, rawProvider, signer, userAddre
             </a>
           </div>
         )}
+
+        {/* On-chain Activity */}
+        <div className="px-6 pb-2">
+          <h4 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">On-chain Activity</h4>
+          <ActivityFeed
+            provider={provider}
+            marketAddress={address}
+            limit={30}
+          />
+        </div>
 
         {/* Timeline */}
         <div className="px-6 pb-6">

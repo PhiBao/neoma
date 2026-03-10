@@ -50,6 +50,14 @@ vi.mock("../hooks/useMarkets", () => ({
     Cancelled: "bg-red-500/20 text-red-400 border-red-500/30",
     Expired: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
   },
+  STATE_ICONS: {
+    Active: "●",
+    "Voting Ended": "◐",
+    Resolving: "⏳",
+    Resolved: "✓",
+    Cancelled: "✕",
+    Expired: "○",
+  },
 }));
 
 vi.mock("../contracts", () => ({
@@ -130,7 +138,7 @@ describe("App — loading state", () => {
     });
 
     render(<App />);
-    const skeleton = document.querySelector(".skeleton");
+    const skeleton = document.querySelector(".neoma-skeleton");
     expect(skeleton).toBeTruthy();
   });
 });
@@ -168,6 +176,7 @@ describe("App — with markets", () => {
           winnerIndices: [],
           optionVoteCounts: [],
           totalWinnerVoters: 0,
+          tags: [],
         },
       ],
       votedMap: {},

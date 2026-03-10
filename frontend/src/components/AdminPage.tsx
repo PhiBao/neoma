@@ -17,6 +17,8 @@ export function AdminPage({ signer }: Props) {
   const [options, setOptions] = useState(["", ""]);
   const [stake, setStake] = useState("0.001");
   const [durationMinutes, setDurationMinutes] = useState("60");
+  const [tags, setTags] = useState("");
+  const [creatorFee, setCreatorFee] = useState("0");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -84,6 +86,45 @@ export function AdminPage({ signer }: Props) {
       return;
     }
 
+    // Length validation
+    if (question.trim().length > 500) {
+      setError("Question must be 500 characters or fewer");
+      return;
+    }
+    for (const opt of trimmedOpts) {
+      if (opt.length > 100) {
+        setError("Each option must be 100 characters or fewer");
+        return;
+      }
+    }
+
+    // Check for duplicate options
+    const uniqueOpts = new Set(trimmedOpts.map((o) => o.toLowerCase()));
+    if (uniqueOpts.size !== trimmedOpts.length) {
+      setError("Options must be unique");
+      return;
+    }
+
+    // Validate tags
+    const parsedTags = tags.split(",").map((t) => t.trim()).filter(Boolean);
+    if (parsedTags.length > 5) {
+      setError("Maximum 5 tags allowed");
+      return;
+    }
+    for (const tag of parsedTags) {
+      if (tag.length > 30) {
+        setError("Each tag must be 30 characters or fewer");
+        return;
+      }
+    }
+
+    // Validate creator fee
+    const feeNum = parseInt(creatorFee) || 0;
+    if (feeNum < 0 || feeNum > 500) {
+      setError("Creator fee must be between 0 and 500 basis points (5%)");
+      return;
+    }
+
     // Validate stake
     const stakeNum = parseFloat(stake);
     if (isNaN(stakeNum) || stakeNum <= 0) {
@@ -116,6 +157,8 @@ export function AdminPage({ signer }: Props) {
       const tx = await factory.createMarket(
         question.trim(), trimmedOpts,
         stakeWei, now, now + duration,
+        parsedTags,
+        feeNum,
       );
       await tx.wait();
       setSuccess(`Market created! Tx: ${tx.hash.slice(0, 14)}...`);
@@ -123,6 +166,8 @@ export function AdminPage({ signer }: Props) {
       setOptions(["", ""]);
       setStake("0.001");
       setDurationMinutes("60");
+      setTags("");
+      setCreatorFee("0");
       fetchMarkets();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Transaction failed";
@@ -133,8 +178,11 @@ export function AdminPage({ signer }: Props) {
   }
 
   // Resolve market (admin helper)
+  const [resolvingAddr, setResolvingAddr] = useState("");
   async function handleResolve(addr: string) {
     if (!signer) return;
+    if (!window.confirm("Are you sure you want to resolve this market? This cannot be undone.")) return;
+    setResolvingAddr(addr);
     try {
       const contract = new Contract(addr, OpinionMarketABI, signer);
       const tx = await contract.resolveMarket();
@@ -143,6 +191,8 @@ export function AdminPage({ signer }: Props) {
       setSuccess(`Market resolved! The market will now show final results.`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message.slice(0, 120) : "Resolve failed");
+    } finally {
+      setResolvingAddr("");
     }
   }
 
@@ -277,6 +327,73 @@ export function AdminPage({ signer }: Props) {
               })()}
             </div>
           </div>
+
+          {/* Tags */}
+          <div>
+            <label htmlFor="admin-tags" className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+              Tags <span className="text-[var(--text-muted)]">(comma-separated, max 5)</span>
+            </label>
+            <input
+              id="admin-tags"
+              type="text"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="e.g. DeFi, Ethereum, L2"
+              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-violet-500/50"
+            />
+            {tags && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {tags.split(",").map((t) => t.trim()).filter(Boolean).map((tag, i) => (
+                  <span key={i} className="text-[10px] bg-violet-500/15 text-violet-400 border border-violet-500/20 rounded-full px-2 py-0.5">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Creator Fee */}
+          <div>
+            <label htmlFor="admin-fee" className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+              Creator Fee <span className="text-[var(--text-muted)]">(basis points, max 500 = 5%)</span>
+            </label>
+            <input
+              id="admin-fee"
+              type="number"
+              value={creatorFee}
+              onChange={(e) => setCreatorFee(e.target.value)}
+              min="0"
+              max="500"
+              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-violet-500/50"
+            />
+            <div className="flex gap-1.5 mt-1.5">
+              {[
+                { label: "0%", val: "0" },
+                { label: "1%", val: "100" },
+                { label: "2%", val: "200" },
+                { label: "2.5%", val: "250" },
+                { label: "5%", val: "500" },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => setCreatorFee(p.val)}
+                  className={`text-[10px] px-2 py-0.5 rounded border transition cursor-pointer ${
+                    creatorFee === p.val
+                      ? "bg-violet-500/20 text-violet-400 border-violet-500/30"
+                      : "text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text-primary)] hover:border-violet-500/30"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {parseInt(creatorFee) > 0 && (
+              <div className="text-[10px] text-[var(--text-muted)] mt-1">
+                = {(parseInt(creatorFee) / 100).toFixed(2)}% fee to market creator on each winning claim
+              </div>
+            )}
+          </div>
         </div>
 
         {error && (
@@ -369,9 +486,15 @@ export function AdminPage({ signer }: Props) {
                     {canResolve && (
                       <button
                         onClick={() => handleResolve(m.address)}
-                        className="text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg px-3 py-1.5 hover:bg-amber-500/30 transition cursor-pointer"
+                        disabled={resolvingAddr === m.address}
+                        className="text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg px-3 py-1.5 hover:bg-amber-500/30 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        Resolve
+                        {resolvingAddr === m.address ? (
+                          <span className="flex items-center gap-1">
+                            <span className="w-3 h-3 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin" />
+                            Resolving...
+                          </span>
+                        ) : "Resolve"}
                       </button>
                     )}
                     <a

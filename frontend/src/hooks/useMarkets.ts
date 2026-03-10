@@ -5,6 +5,8 @@ import {
   MarketFactoryABI,
   OpinionMarketABI,
 } from "../contracts";
+import { MARKET_POLL_INTERVAL_MS, MARKET_WS_POLL_INTERVAL_MS } from "../constants";
+import type { UseWebSocketReturn } from "./useWebSocket";
 
 type AnyProvider = BrowserProvider | JsonRpcProvider;
 
@@ -12,6 +14,7 @@ export interface MarketInfo {
   address: string;
   question: string;
   options: string[];
+  tags: string[];
   stakeAmount: bigint;
   startTime: number;
   endTime: number;
@@ -49,6 +52,7 @@ export function isVotingOpen(market: MarketInfo): boolean {
 
 /**
  * STATE_COLORS keyed by display-state string for badge styling.
+ * Each includes an a11y label/icon prefix for color-blind accessibility.
  */
 export const STATE_COLORS: Record<string, string> = {
   Active: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
@@ -59,7 +63,17 @@ export const STATE_COLORS: Record<string, string> = {
   Expired: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
 };
 
-export async function fetchMarketInfo(m: Contract, addr: string): Promise<MarketInfo> {
+/** Accessible icon per state (works without color vision) */
+export const STATE_ICONS: Record<string, string> = {
+  Active: "●",
+  "Voting Ended": "◐",
+  Resolving: "⏳",
+  Resolved: "✓",
+  Cancelled: "✕",
+  Expired: "○",
+};
+
+export async function fetchMarketInfo(m: Contract, addr: string, tags: string[] = []): Promise<MarketInfo> {
   const [question, opts, stakeAmount, startTime, endTime, resolutionDeadline, state, totalPool, totalVoters, winnerIndices, optionVoteCounts, totalWinnerVoters] =
     await Promise.all([
       m.question(),
@@ -79,6 +93,7 @@ export async function fetchMarketInfo(m: Contract, addr: string): Promise<Market
     address: addr,
     question,
     options: Array.from(opts as string[]),
+    tags,
     stakeAmount,
     startTime: Number(startTime),
     endTime: Number(endTime),
@@ -92,7 +107,7 @@ export async function fetchMarketInfo(m: Contract, addr: string): Promise<Market
   };
 }
 
-export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
+export function useMarkets(provider: AnyProvider | null, userAddress?: string, ws?: UseWebSocketReturn) {
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [votedMap, setVotedMap] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
@@ -129,7 +144,10 @@ export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
         const results = await Promise.allSettled(
           batch.map(async (addr) => {
             const m = new Contract(addr, OpinionMarketABI, provider);
-            return fetchMarketInfo(m, addr);
+            // Fetch tags from factory (graceful fallback to empty)
+            let marketTags: string[] = [];
+            try { marketTags = Array.from(await factory.getMarketTags(addr) as string[]); } catch { /* old factory */ }
+            return fetchMarketInfo(m, addr, marketTags);
           }),
         );
         for (const r of results) {
@@ -176,12 +194,14 @@ export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
     fetchMarkets();
   }, [fetchMarkets]);
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh every 30 seconds (polling fallback when WS is down)
   useEffect(() => {
     if (!provider || !MARKET_FACTORY_ADDRESS) return;
-    const id = setInterval(fetchMarkets, 30_000);
+    // Use longer interval when WebSocket is active
+    const interval = ws?.status === "connected" ? MARKET_WS_POLL_INTERVAL_MS : MARKET_POLL_INTERVAL_MS;
+    const id = setInterval(fetchMarkets, interval);
     return () => clearInterval(id);
-  }, [fetchMarkets, provider]);
+  }, [fetchMarkets, provider, ws?.status]);
 
   // Refetch when tab regains visibility (stale data after backgrounding)
   useEffect(() => {
@@ -194,6 +214,83 @@ export function useMarkets(provider: AnyProvider | null, userAddress?: string) {
     return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [fetchMarkets]);
 
+  // ── WebSocket: subscribe to factory events for new markets ────────
+  useEffect(() => {
+    if (!ws || ws.status !== "connected" || !provider || !MARKET_FACTORY_ADDRESS) return;
+    return ws.subscribeFactory(async (_marketId: bigint, _marketAddress: string) => {
+      // Incrementally fetch just the new market instead of full refetch
+      try {
+        const factory = new Contract(MARKET_FACTORY_ADDRESS, MarketFactoryABI, provider);
+        const m = new Contract(_marketAddress, OpinionMarketABI, provider);
+        let marketTags: string[] = [];
+        try { marketTags = Array.from(await factory.getMarketTags(_marketAddress) as string[]); } catch { /* old factory */ }
+        const info = await fetchMarketInfo(m, _marketAddress, marketTags);
+        setMarkets((prev) => {
+          // Avoid duplicates
+          if (prev.some((p) => p.address === _marketAddress)) return prev;
+          return [info, ...prev];
+        });
+      } catch {
+        // Fallback to full refetch if incremental fails
+        fetchMarkets();
+      }
+    });
+  }, [ws, ws?.status, fetchMarkets, provider]);
+
+  // ── WebSocket: subscribe to per-market events ─────────────────────
+  useEffect(() => {
+    if (!ws || ws.status !== "connected" || markets.length === 0) return;
+
+    const cleanups: (() => void)[] = [];
+
+    for (const mkt of markets) {
+      // Only subscribe to active / resolving markets (where events can happen)
+      if (mkt.state > 1) continue;
+
+      const cleanup = ws.subscribeMarket(mkt.address, {
+        onVoteCast: () => {
+          // Incrementally update the market's voter count + pool
+          setMarkets((prev) =>
+            prev.map((m) =>
+              m.address === mkt.address
+                ? { ...m, totalVoters: m.totalVoters + 1, totalPool: m.totalPool + m.stakeAmount }
+                : m,
+            ),
+          );
+        },
+        onResolutionInitiated: () => {
+          setMarkets((prev) =>
+            prev.map((m) =>
+              m.address === mkt.address ? { ...m, state: 1 } : m,
+            ),
+          );
+        },
+        onMarketResolved: (winnerIndices: number[], totalWinnerVoters: number) => {
+          // Full refetch to get vote counts from finalization
+          fetchMarkets();
+          // Optimistic state update
+          setMarkets((prev) =>
+            prev.map((m) =>
+              m.address === mkt.address
+                ? { ...m, state: 2, winnerIndices, totalWinnerVoters }
+                : m,
+            ),
+          );
+        },
+        onMarketExpired: () => {
+          setMarkets((prev) =>
+            prev.map((m) =>
+              m.address === mkt.address ? { ...m, state: 4 } : m,
+            ),
+          );
+        },
+      });
+      cleanups.push(cleanup);
+    }
+
+    return () => cleanups.forEach((fn) => fn());
+  }, [ws, ws?.status, markets.length, fetchMarkets]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return { markets, votedMap, loading, error, refetch: fetchMarkets };
 }
 
@@ -201,15 +298,18 @@ export function useMarketDetail(provider: AnyProvider | null, address: string) {
   const [market, setMarket] = useState<MarketInfo | null>(null);
   const [hasVoted, setHasVoted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const userAddrRef = useRef<string | undefined>(undefined);
 
   const fetch = useCallback(async (userAddress?: string) => {
+    if (userAddress !== undefined) userAddrRef.current = userAddress;
+    const addr = userAddress ?? userAddrRef.current;
     if (!provider || !address) return;
     setLoading(true);
     try {
       const m = new Contract(address, OpinionMarketABI, provider);
       setMarket(await fetchMarketInfo(m, address));
-      if (userAddress) {
-        const voted = await m.hasVoted(userAddress);
+      if (addr) {
+        const voted = await m.hasVoted(addr);
         setHasVoted(voted);
       }
     } catch {
@@ -221,6 +321,22 @@ export function useMarketDetail(provider: AnyProvider | null, address: string) {
 
   useEffect(() => {
     fetch();
+  }, [fetch]);
+
+  // Auto-refresh every 15s so state changes (bot resolution, other users) are picked up
+  useEffect(() => {
+    if (!provider || !address) return;
+    const id = setInterval(() => fetch(), 15_000);
+    return () => clearInterval(id);
+  }, [fetch, provider, address]);
+
+  // Refetch when tab regains visibility
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") fetch();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [fetch]);
 
   return { market, hasVoted, loading, refetch: fetch };

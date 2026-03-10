@@ -6,7 +6,7 @@ import {IMarketFactory} from "./interfaces/IMarketFactory.sol";
 
 /// @title MarketFactory — Deploys and indexes OpinionMarket instances
 /// @author Neoma Protocol
-/// @notice Permissionless factory: anyone can create a binary opinion market.
+/// @notice Factory for creating and indexing multi-option opinion markets.
 ///         Each market is an independent OpinionMarket contract.
 contract MarketFactory is IMarketFactory {
     // ═══════════════════════════════════════════════════════════════
@@ -18,6 +18,13 @@ contract MarketFactory is IMarketFactory {
     mapping(address => bool) private _isMarket;
     mapping(uint256 => address) private _marketById;
     uint256 private _marketCount;
+
+    // ── Tags ────────────────────────────────────────────────────
+    uint8 private constant MAX_TAGS = 5;
+    mapping(address => string[]) private _marketTags;
+    mapping(string => address[]) private _tagMarkets;
+    string[] private _allTags;
+    mapping(string => bool) private _tagExists;
 
     // ═══════════════════════════════════════════════════════════════
     //  CONSTRUCTOR
@@ -37,7 +44,9 @@ contract MarketFactory is IMarketFactory {
         string[] calldata optionTexts,
         uint256 stakeAmount_,
         uint256 startTime_,
-        uint256 endTime_
+        uint256 endTime_,
+        string[] calldata tags,
+        uint16 creatorFeeBps
     ) external override returns (address market) {
         // ── Only owner can create markets ──
         if (msg.sender != owner) revert NotOwner();
@@ -49,6 +58,7 @@ contract MarketFactory is IMarketFactory {
             if (bytes(optionTexts[i]).length == 0) revert EmptyOption();
         }
         if (stakeAmount_ == 0) revert InvalidStake();
+        if (tags.length > MAX_TAGS) revert TooManyTags();
 
         // ── Deploy new market contract ──
         OpinionMarket deployed = new OpinionMarket(
@@ -57,7 +67,9 @@ contract MarketFactory is IMarketFactory {
             stakeAmount_,
             startTime_,
             endTime_,
-            address(this)
+            address(this),
+            msg.sender,
+            creatorFeeBps
         );
 
         market = address(deployed);
@@ -69,7 +81,18 @@ contract MarketFactory is IMarketFactory {
         _marketById[id] = market;
         _marketCount = id + 1;
 
-        emit MarketCreated(id, market, msg.sender, questionText);
+        // ── Store tags ──
+        for (uint256 i = 0; i < tags.length; i++) {
+            string memory tag = tags[i];
+            _marketTags[market].push(tag);
+            _tagMarkets[tag].push(market);
+            if (!_tagExists[tag]) {
+                _tagExists[tag] = true;
+                _allTags.push(tag);
+            }
+        }
+
+        emit MarketCreated(id, market, msg.sender, questionText, tags);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -99,5 +122,20 @@ contract MarketFactory is IMarketFactory {
     /// @inheritdoc IMarketFactory
     function isMarket(address addr) external view override returns (bool) {
         return _isMarket[addr];
+    }
+
+    /// @inheritdoc IMarketFactory
+    function getMarketTags(address market) external view override returns (string[] memory) {
+        return _marketTags[market];
+    }
+
+    /// @inheritdoc IMarketFactory
+    function getMarketsByTag(string calldata tag) external view override returns (address[] memory) {
+        return _tagMarkets[tag];
+    }
+
+    /// @inheritdoc IMarketFactory
+    function getAllTags() external view override returns (string[] memory) {
+        return _allTags;
     }
 }

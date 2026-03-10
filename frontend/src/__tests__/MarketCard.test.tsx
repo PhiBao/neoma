@@ -32,6 +32,7 @@ function makeMarket(overrides: Partial<MarketInfo> = {}): MarketInfo {
     address: "0x0000000000000000000000000000000000000001",
     question: "Will ETH hit $10k in 2026?",
     options: ["Yes", "No"],
+    tags: [],
     stakeAmount: ethers.parseEther("0.01"),
     startTime: Math.floor(Date.now() / 1000) - 3600,
     endTime: Math.floor(Date.now() / 1000) + 86400,
@@ -111,7 +112,7 @@ describe("MarketCard", () => {
   it("shows winner checkmark on resolved market", () => {
     const market = makeMarket({ state: 2, winnerIndices: [0], optionVoteCounts: [3, 2], totalWinnerVoters: 3 });
     render(<MarketCard market={market} {...baseProps} />);
-    expect(screen.getByText("✓")).toBeInTheDocument();
+    expect(screen.getAllByText("✓").length).toBeGreaterThanOrEqual(1);
   });
 
   it("fires onNavigate when card is clicked", () => {

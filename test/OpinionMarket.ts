@@ -35,11 +35,12 @@ async function deployWithActiveMarket(signers: Signers) {
 
   const tx = await marketFactory.connect(signers.deployer).createMarket(
     "Who is the GOAT?",
-    "CR7",
-    "M10",
+    ["CR7", "M10"],
     STAKE,
     startTime,
     endTime,
+    [],  // no tags
+    0,   // no creator fee
   );
   await tx.wait();
 
@@ -90,7 +91,7 @@ describe("OpinionMarket Protocol", function () {
 
     it("should create a market and return its address", async function () {
       const now = await time.latest();
-      const tx = await marketFactory.createMarket("A vs B?", "A", "B", STAKE, now, now + 3600);
+      const tx = await marketFactory.createMarket("A vs B?", ["A", "B"], STAKE, now, now + 3600, [], 0);
       await tx.wait();
 
       expect(await marketFactory.marketCount()).to.eq(1);
@@ -101,8 +102,8 @@ describe("OpinionMarket Protocol", function () {
 
     it("should create multiple markets with incrementing IDs", async function () {
       const now = await time.latest();
-      await (await marketFactory.createMarket("Q1?", "A", "B", STAKE, now, now + 3600)).wait();
-      await (await marketFactory.createMarket("Q2?", "C", "D", STAKE, now, now + 7200)).wait();
+      await (await marketFactory.createMarket("Q1?", ["A", "B"], STAKE, now, now + 3600, [], 0)).wait();
+      await (await marketFactory.createMarket("Q2?", ["C", "D"], STAKE, now, now + 7200, [], 0)).wait();
 
       expect(await marketFactory.marketCount()).to.eq(2);
       const all = await marketFactory.getAllMarkets();
@@ -112,7 +113,7 @@ describe("OpinionMarket Protocol", function () {
 
     it("should emit MarketCreated event", async function () {
       const now = await time.latest();
-      await expect(marketFactory.createMarket("Q?", "X", "Y", STAKE, now, now + 3600)).to.emit(
+      await expect(marketFactory.createMarket("Q?", ["X", "Y"], STAKE, now, now + 3600, [], 0)).to.emit(
         marketFactory,
         "MarketCreated",
       );
@@ -120,7 +121,7 @@ describe("OpinionMarket Protocol", function () {
 
     it("should revert on empty question", async function () {
       const now = await time.latest();
-      await expect(marketFactory.createMarket("", "A", "B", STAKE, now, now + 3600)).to.be.revertedWithCustomError(
+      await expect(marketFactory.createMarket("", ["A", "B"], STAKE, now, now + 3600, [], 0)).to.be.revertedWithCustomError(
         marketFactory,
         "EmptyQuestion",
       );
@@ -128,7 +129,7 @@ describe("OpinionMarket Protocol", function () {
 
     it("should revert on empty option", async function () {
       const now = await time.latest();
-      await expect(marketFactory.createMarket("Q?", "", "B", STAKE, now, now + 3600)).to.be.revertedWithCustomError(
+      await expect(marketFactory.createMarket("Q?", ["", "B"], STAKE, now, now + 3600, [], 0)).to.be.revertedWithCustomError(
         marketFactory,
         "EmptyOption",
       );
@@ -136,10 +137,77 @@ describe("OpinionMarket Protocol", function () {
 
     it("should revert on zero stake", async function () {
       const now = await time.latest();
-      await expect(marketFactory.createMarket("Q?", "A", "B", 0, now, now + 3600)).to.be.revertedWithCustomError(
+      await expect(marketFactory.createMarket("Q?", ["A", "B"], 0, now, now + 3600, [], 0)).to.be.revertedWithCustomError(
         marketFactory,
         "InvalidStake",
       );
+    });
+
+    it("should store and return tags", async function () {
+      const now = await time.latest();
+      await (await marketFactory.createMarket("Tagged?", ["A", "B"], STAKE, now, now + 3600, ["Crypto", "DeFi"], 0)).wait();
+      const addr = await marketFactory.getMarket(0);
+      const tags = await marketFactory.getMarketTags(addr);
+      expect(tags).to.deep.eq(["Crypto", "DeFi"]);
+    });
+
+    it("should return markets by tag", async function () {
+      const now = await time.latest();
+      await (await marketFactory.createMarket("Q1?", ["A", "B"], STAKE, now, now + 3600, ["Crypto"], 0)).wait();
+      await (await marketFactory.createMarket("Q2?", ["X", "Y"], STAKE, now, now + 3600, ["NFT"], 0)).wait();
+      await (await marketFactory.createMarket("Q3?", ["M", "N"], STAKE, now, now + 3600, ["Crypto", "NFT"], 0)).wait();
+
+      const cryptoMarkets = await marketFactory.getMarketsByTag("Crypto");
+      expect(cryptoMarkets.length).to.eq(2);
+      const nftMarkets = await marketFactory.getMarketsByTag("NFT");
+      expect(nftMarkets.length).to.eq(2);
+    });
+
+    it("should return all unique tags", async function () {
+      const now = await time.latest();
+      await (await marketFactory.createMarket("Q1?", ["A", "B"], STAKE, now, now + 3600, ["Crypto", "DeFi"], 0)).wait();
+      await (await marketFactory.createMarket("Q2?", ["X", "Y"], STAKE, now, now + 3600, ["Crypto", "NFT"], 0)).wait();
+
+      const allTags = await marketFactory.getAllTags();
+      expect(allTags.length).to.eq(3);
+      expect(allTags).to.include("Crypto");
+      expect(allTags).to.include("DeFi");
+      expect(allTags).to.include("NFT");
+    });
+
+    it("should revert on too many tags", async function () {
+      const now = await time.latest();
+      await expect(
+        marketFactory.createMarket("Q?", ["A", "B"], STAKE, now, now + 3600, ["a", "b", "c", "d", "e", "f"], 0),
+      ).to.be.revertedWithCustomError(marketFactory, "TooManyTags");
+    });
+
+    it("should store creator fee in the market", async function () {
+      const now = await time.latest();
+      await (await marketFactory.createMarket("Fee?", ["A", "B"], STAKE, now, now + 3600, [], 250)).wait();
+      const addr = await marketFactory.getMarket(0);
+      const market = (await ethers.getContractAt("OpinionMarket", addr)) as unknown as OpinionMarket;
+      expect(await market.creatorFeeBps()).to.eq(250);
+      expect(await market.creator()).to.eq(signers.deployer.address);
+    });
+
+    it("should revert on fee too high", async function () {
+      const now = await time.latest();
+      // FeeTooHigh is emitted by the OpinionMarket constructor, not the factory
+      await expect(
+        marketFactory.createMarket("Q?", ["A", "B"], STAKE, now, now + 3600, [], 600),
+      ).to.be.reverted;
+    });
+
+    it("should create multi-option market with 5 options", async function () {
+      const now = await time.latest();
+      const opts = ["Arbitrum", "Optimism", "Base", "zkSync", "Starknet"];
+      await (await marketFactory.createMarket("Best L2?", opts, STAKE, now, now + 3600, ["L2"], 100)).wait();
+      const addr = await marketFactory.getMarket(0);
+      const market = (await ethers.getContractAt("OpinionMarket", addr)) as unknown as OpinionMarket;
+      expect(await market.optionCount()).to.eq(5);
+      const storedOpts = await market.options();
+      expect(storedOpts).to.deep.eq(opts);
     });
   });
 
@@ -156,8 +224,8 @@ describe("OpinionMarket Protocol", function () {
 
     it("should store correct question and options", async function () {
       expect(await market.question()).to.eq("Who is the GOAT?");
-      expect(await market.optionA()).to.eq("CR7");
-      expect(await market.optionB()).to.eq("M10");
+      const opts = await market.options();
+      expect(opts).to.deep.eq(["CR7", "M10"]);
     });
 
     it("should start in Active state with zero votes", async function () {
@@ -166,14 +234,8 @@ describe("OpinionMarket Protocol", function () {
       expect(await market.totalPool()).to.eq(0);
     });
 
-    it("should initialise encrypted counters (non-zero handles)", async function () {
-      const cA = await market.getEncryptedCounterA();
-      const cB = await market.getEncryptedCounterB();
-      // After trivial-encryption of 0, handles should NOT be the zero hash
-      // (In mock mode the handle IS zero because the mock stores plaintext 0 as 0x00..00
-      //  so we just check the call doesn't revert.)
-      expect(cA).to.exist;
-      expect(cB).to.exist;
+    it("should have correct option count", async function () {
+      expect(await market.optionCount()).to.eq(2);
     });
   });
 
@@ -477,12 +539,55 @@ describe("OpinionMarket Protocol", function () {
   // ─────────────────────────────────────────────────────────────────────────
   //  NOTE: finalizeResolution, claim, and batchPrepareClaims tests require
   //  KMS decryption proofs — only available on live FHEVM (Sepolia/mainnet).
+  //  Tests below verify pre-conditions that can be checked without KMS.
   // ─────────────────────────────────────────────────────────────────────────
 
-  describe("OpinionMarket — finalization & claims (integration-only)", function () {
-    it("should revert finalizeResolution when not in Resolving state");
+  describe("OpinionMarket — finalization & claims (pre-condition checks)", function () {
+    let market: OpinionMarket;
+    let marketAddress: string;
+
+    beforeEach(async function () {
+      ({ market, marketAddress } = await deployWithActiveMarket(signers));
+
+      // Cast 3 votes: Alice → 0, Bob → 1, Charlie → 0
+      const encA = await fhevm.createEncryptedInput(marketAddress, signers.alice.address).add8(0).encrypt();
+      await (await market.connect(signers.alice).vote(encA.handles[0], encA.inputProof, { value: STAKE })).wait();
+      const encB = await fhevm.createEncryptedInput(marketAddress, signers.bob.address).add8(1).encrypt();
+      await (await market.connect(signers.bob).vote(encB.handles[0], encB.inputProof, { value: STAKE })).wait();
+      const encC = await fhevm.createEncryptedInput(marketAddress, signers.charlie.address).add8(0).encrypt();
+      await (await market.connect(signers.charlie).vote(encC.handles[0], encC.inputProof, { value: STAKE })).wait();
+    });
+
+    it("should revert finalizeResolution when not in Resolving state", async function () {
+      // Market is still Active — finalizeResolution should revert
+      await expect(
+        market.finalizeResolution("0x", "0x"),
+      ).to.be.revertedWithCustomError(market, "MarketNotResolving");
+    });
+
+    it("should revert prepareClaim before resolution", async function () {
+      // Market is Active, not Resolved
+      await expect(
+        market.connect(signers.alice).prepareClaim(),
+      ).to.be.revertedWithCustomError(market, "MarketNotResolved");
+    });
+
+    it("should revert non-owner from calling resolveMarket", async function () {
+      await time.increase(3601);
+      await expect(
+        market.connect(signers.alice).resolveMarket(),
+      ).to.be.revertedWithCustomError(market, "NotAuthorized");
+    });
+
+    it("should expose resolution handles after resolveMarket", async function () {
+      await time.increase(3601);
+      await (await market.resolveMarket()).wait();
+      const handles = await market.getResolutionHandles();
+      expect(handles.length).to.eq(2); // 2 options = 2 handles
+    });
+
+    // These require actual KMS proofs — kept as pending
     it("should finalize with valid KMS proof and transition to Resolved");
-    it("should revert prepareClaim before resolution");
     it("should prepare claim for eligible voter");
     it("should batch-prepare claims for all voters");
     it("should execute claim and transfer payout to winner");

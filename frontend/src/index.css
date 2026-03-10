@@ -84,12 +84,12 @@ body {
 }
 
 /* ── Card glow on hover ── */
-.card-glow {
+.neoma-card-glow {
   position: relative;
   transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
 }
 
-.card-glow:hover {
+.neoma-card-glow:hover {
   transform: translateY(-2px);
   box-shadow:
     0 0 0 1px rgba(139, 92, 246, 0.15),
@@ -98,7 +98,7 @@ body {
 }
 
 /* ── Glass effect ── */
-.glass {
+.neoma-glass {
   background: rgba(26, 26, 46, 0.6);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -115,7 +115,7 @@ body {
   }
 }
 
-.skeleton {
+.neoma-skeleton {
   background: linear-gradient(90deg,
       var(--bg-secondary) 25%,
       var(--bg-card) 50%,
@@ -126,7 +126,7 @@ body {
 }
 
 /* ── Animated percentage bar fill ── */
-.bar-fill {
+.neoma-bar-fill {
   transform-origin: left;
   animation: bar-grow 0.8s ease-out forwards;
   transform: scaleX(var(--bar-width, 1));
@@ -143,7 +143,7 @@ body {
 }
 
 /* ── Stat glow effect ── */
-.stat-glow {
+.neoma-stat-glow {
   text-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
 }
 
@@ -160,11 +160,11 @@ body {
   }
 }
 
-.pulse-dot {
+.neoma-pulse-dot {
   position: relative;
 }
 
-.pulse-dot::after {
+.neoma-pulse-dot::after {
   content: '';
   position: absolute;
   inset: -2px;

@@ -105,12 +105,19 @@ export function resetFhevmInstance() {
  * @param provider - The EIP-1193 provider
  * @param handles - Array of bytes32 handle strings from the contract
  */
+const KMS_TIMEOUT_MS = 120_000; // 2 minutes
+
 export async function publicDecryptHandles(
   provider: Eip1193Provider,
   handles: string[],
 ): Promise<{ abiEncodedClearValues: string; decryptionProof: string }> {
   const instance = await getFhevmInstance(provider);
-  const result = await instance.publicDecrypt(handles);
+  const result = await Promise.race([
+    instance.publicDecrypt(handles),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("KMS decryption timed out after 2 minutes — the proof may not be ready yet. Please try finalizing again in a few minutes.")), KMS_TIMEOUT_MS),
+    ),
+  ]);
   return {
     abiEncodedClearValues: result.abiEncodedClearValues,
     decryptionProof: result.decryptionProof,

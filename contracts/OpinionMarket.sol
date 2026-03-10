@@ -34,6 +34,7 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
 
     uint256 public constant RESOLUTION_GRACE_PERIOD = 24 hours;
     uint8 public constant MAX_OPTIONS = 10;
+    uint16 public constant MAX_FEE_BPS = 500; // 5% max creator fee
 
     // ═══════════════════════════════════════════════════════════════
     //  STORAGE — Market Metadata
@@ -46,6 +47,8 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
     uint256 private _endTime;
     uint256 private _resolutionDeadline;
     address public immutable factory;
+    address private _creator;
+    uint16 private _creatorFeeBps;
 
     // ═══════════════════════════════════════════════════════════════
     //  STORAGE — Lifecycle
@@ -98,11 +101,14 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         uint256 stakePerVote,
         uint256 marketStart,
         uint256 marketEnd,
-        address factoryAddr
+        address factoryAddr,
+        address creatorAddr,
+        uint16 feeBps
     ) {
         if (marketStart >= marketEnd) revert InvalidTimings();
         if (optionTexts.length < 2 || optionTexts.length > MAX_OPTIONS)
             revert InvalidOptionCount();
+        if (feeBps > MAX_FEE_BPS) revert FeeTooHigh();
 
         _question = questionText;
         _stakeAmount = stakePerVote;
@@ -111,6 +117,8 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         _resolutionDeadline = marketEnd + RESOLUTION_GRACE_PERIOD;
         _state = MarketState.Active;
         factory = factoryAddr;
+        _creator = creatorAddr;
+        _creatorFeeBps = feeBps;
 
         for (uint256 i = 0; i < optionTexts.length; i++) {
             _options.push(optionTexts[i]);
@@ -321,12 +329,29 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
 
         _hasClaimed[voter] = true;
 
+        if (_totalWinnerVoters == 0) revert NoVotes();
         uint256 payout = _totalPool / uint256(_totalWinnerVoters);
 
-        (bool success, ) = payable(voter).call{value: payout}("");
+        // Deduct creator fee (taken once from total pool, apportioned equally)
+        uint256 fee = 0;
+        if (_creatorFeeBps > 0 && _creator != address(0)) {
+            fee = (payout * uint256(_creatorFeeBps)) / 10000;
+        }
+        uint256 voterPayout = payout - fee;
+
+        (bool success, ) = payable(voter).call{value: voterPayout}("");
         if (!success) revert TransferFailed();
 
-        emit RewardClaimed(voter, payout);
+        // Send fee to creator
+        if (fee > 0) {
+            (bool feeSuccess, ) = payable(_creator).call{value: fee}("");
+            if (feeSuccess) {
+                emit CreatorFeeCollected(_creator, fee);
+            }
+            // If fee transfer fails, it stays in contract (non-blocking)
+        }
+
+        emit RewardClaimed(voter, voterPayout);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -462,6 +487,14 @@ contract OpinionMarket is ZamaEthereumConfig, IOpinionMarket {
         address voter
     ) external view override returns (bytes32) {
         return ebool.unwrap(_claimEligibility[voter]);
+    }
+
+    function creator() external view override returns (address) {
+        return _creator;
+    }
+
+    function creatorFeeBps() external view override returns (uint16) {
+        return _creatorFeeBps;
     }
 
     // ═══════════════════════════════════════════════════════════════
